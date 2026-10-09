@@ -36,9 +36,15 @@ implemented. This repository is a reviewed bootstrap, not an open upload API.
 
 ## Validation/deployment
 
-python3 scripts/validate.py checks identities, inventories, per-file hashes and
-Tarn's aggregate source hash. --base COMMIT also refuses replacement/removal of
-published versions. CI never compiles, imports or executes package source/hooks.
+The tools/registry.tarn program validates identities, inventories, duplicate JSON
+keys, per-file SHA-256 and Tarn source hashes. It also rejects changes to release
+bytes tracked by a supplied Git base commit. SHA-256 uses the system sha256sum
+tool with explicit argument separation; validation never uses Python.
+
+Run TARN=/absolute/path/to/tarn tools/test.sh. CI builds a pinned compiler revision,
+then compiles the Tarn validator, runs tampering/duplicate-key/symlink/immutable
+release tests and generates build/catalog.json. Deployment places that generated
+catalog at site/catalog.json. Generated metadata is not publisher provenance. CI never compiles, imports or executes package source/hooks.
 PR jobs have read-only permissions and no deployment secrets. Deployment runs
 only from main and publishes site/ as static bytes. Protect main and require
 review of CI changes; the workflow cannot substitute for that policy.
@@ -50,3 +56,17 @@ There is no default registry change in the compiler in this project.
 
 Advisories and signed provenance are currently unknown: do not add an empty
 advisory list to pretend that security review succeeded.
+
+## Language website and package metadata
+
+The registry landing page now includes the language guide and package search.
+The independent official website is https://tarn-lng.github.io/website/.
+Canonical language documentation stays in tarn-lng/tarn.
+
+Add package descriptions and explicit native-link requirements to
+catalog-metadata.json. The generator emits catalog entries only for validated
+release records. It does not run package programs or manufacture safety badges.
+
+Bootstrap dependencies are a pinned Tarn compiler source revision, Rust/C build
+tools, Git, find and sha256sum. The package registry protocol and immutable
+release files are unchanged.
