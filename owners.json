@@ -3,5 +3,10 @@
     "maintainers": ["cesardev31"],
     "repository": "https://github.com/tarn-lng/tarn-dbus",
     "status": "experimental"
+  },
+  "postgres": {
+    "maintainers": ["cesardev31"],
+    "repository": "https://github.com/tarn-lng/tarn-postgres",
+    "status": "experimental"
   }
 }

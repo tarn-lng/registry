@@ -1,1 +1,10 @@
-{"dbus":{"description":"Session D-Bus calls, name ownership and signals in Tarn. Backed by libdbus-1; Linux x86_64.","nativeLink":"dbus-1"}}
+{
+  "dbus": {
+    "description": "Session D-Bus calls, name ownership and signals in Tarn. Backed by libdbus-1; Linux x86_64.",
+    "nativeLink": "dbus-1"
+  },
+  "postgres": {
+    "description": "Pure native PostgreSQL client driver for Tarn. Protocol 3.0 over TCP sockets; zero C dependencies.",
+    "nativeLink": ""
+  }
+}
