@@ -1,0 +1,14 @@
+{
+  "dependencies": {},
+  "entry": "src/dbus.tarn",
+  "files": {
+    "README.md": "4ad40a87f6ece4bb935d2fc6e5429f36e1d57f226206547112c7136c3186e7da",
+    "src/dbus.tarn": "191e155e51f500c266b566c6d6cf7bc42125671472ae5eddd75656272a682e30",
+    "tarn.toml": "3ea6990e5e58093a815e62b11ae16a1a402d11271ad4363dafd876f0b6b5e9a7"
+  },
+  "hash": "ec0e04efb3afd07d62e39419e7b92186817e083f8d9305d8b1ebdcc127a9b59e",
+  "name": "dbus",
+  "published": 1791583271,
+  "schema": 1,
+  "version": "0.1.0"
+}

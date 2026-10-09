@@ -1,0 +1,7 @@
+{
+  "dbus": {
+    "maintainers": ["cesardev31"],
+    "repository": "https://github.com/tarn-lng/tarn-dbus",
+    "status": "experimental"
+  }
+}
