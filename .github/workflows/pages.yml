@@ -17,19 +17,20 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Validate immutable package bytes
+      - name: Build pinned trusted Tarn toolchain
+        run: tools/bootstrap.sh
+      - name: Validate registry and generate catalog with Tarn
         env:
           BASE: ${{ github.event.before }}
+          TARN: ${{ github.workspace }}/build/compiler/target/release/tarn
         run: |
-          if [ -n "$BASE" ] && [ "$BASE" != 0000000000000000000000000000000000000000 ]; then
-            python3 scripts/validate.py --base "$BASE"
-          else
-            python3 scripts/validate.py
-          fi
+          if [ "$BASE" = 0000000000000000000000000000000000000000 ]; then export BASE=; fi
+          tools/test.sh
+          cp build/catalog.json site/catalog.json
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

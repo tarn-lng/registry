@@ -1,0 +1,291 @@
+import "fs"
+import "json"
+import "string"
+import "process"
+import "io"
+import "os"
+import "collections"
+fn require(ok bool, message &string) Result<void, string> {
+    if !ok { return Err(message.clone()) }
+    return Ok(())
+}
+fn command(args &Vec<string>) Result<string, string> {
+    out := try process.Command.new(args.get(0).clone()).args(&args.as_slice()[1..args.len()]).output().map_err(fn(failure io.Error) string { return "Cannot execute validation tool" })
+    try require(out.status.success(), "Validation tool failed")
+    return out.stdout_text().map_err(fn(failure io.Error) string { return "Tool output is not UTF-8" })
+}
+fn run(program &string, first &string, second &string) Result<string, string> {
+    var args: Vec<string> = Vec.new()
+    args.push(program.clone())
+    args.push(first.clone())
+    args.push(second.clone())
+    return command(&args)
+}
+fn read(path &string) Result<string, string> {
+    meta := try fs.metadata(path).map_err(fn(failure io.Error) string { return "Missing registry file" })
+    try require(meta.is_file && meta.len <= 4194304, &("Invalid file or size: " + path))
+    return fs.read_text(path).map_err(fn(failure io.Error) string { return "Cannot read UTF-8 file" })
+}
+fn unique(value &json.Value) Result<void, string> {
+    match value {
+        json.Value.Object(entries) => {
+            var seen: collections.Set<string> = collections.Set.new()
+            for m in entries.as_slice() {
+                try require(!seen.contains(&m.key), "Duplicate JSON key")
+                seen.insert(m.key.clone())
+                try unique(&m.value)
+            }
+        }
+        json.Value.List(values) => { for v in values.as_slice() { try unique(v) } }
+        _ => {}
+    }
+    return Ok(())
+}
+fn load(path &string) Result<json.Value, string> {
+    source := try read(path)
+    value := try json.parse(&source).map_err(fn(e json.Error) string { return "Invalid JSON" })
+    try unique(&value)
+    return Ok(value)
+}
+fn field(value &json.Value, key &string) Result<json.Value, string> { return value.get(key).ok_or("Missing release field: " + key) }
+fn text(value &json.Value, key &string) Result<string, string> { return value.text(key).ok_or("Invalid text field: " + key) }
+fn list(value json.Value) Result<Vec<json.Value>, string> {
+    match value { json.Value.List(values) => { return Ok(values) }
+        _ => { return Err("Expected JSON array") } }
+}
+fn members(value json.Value) Result<Vec<json.Member>, string> {
+    match value { json.Value.Object(values) => { return Ok(values) }
+        _ => { return Err("Expected JSON object") } }
+}
+fn safe_path(path &string) bool {
+    if path.is_empty() || string.starts_with(path, "/") { return false }
+    parts := string.split(path, "/")
+    if parts.len() > 32 { return false }
+    for p in parts.as_slice() {
+        if p.is_empty() || string.starts_with(p, ".") { return false }
+        for b in p.bytes() { if b < 32 || b == 127 || b == 92 { return false } }
+    }
+    return true
+}
+fn valid_name(name &string) bool {
+    if name.len() == 0 || name.len() > 64 { return false }
+    for i in 0..name.len() {
+        b := name.bytes()[i]
+        if b >= 97 && b <= 122 { continue }
+        if i > 0 && ((b >= 48 && b <= 57) || b == 95) { continue }
+        return false
+    }
+    return true
+}
+fn version(value &string) bool {
+    plus := string.split(value, "+")
+    if plus.len() > 2 { return false }
+    minus := string.split(plus.get(0), "-")
+    core := string.split(minus.get(0), ".")
+    if core.len() != 3 { return false }
+    for p in core.as_slice() {
+        if p.is_empty() || (p.len() > 1 && p.bytes()[0] == 48) { return false }
+        if string.parse_u64(p).is_none() { return false }
+    }
+    for i in 1..plus.len() { if plus.get(i).is_empty() { return false } }
+    if minus.len() > 1 {
+        tail := string.slice(plus.get(0), core.get(0).len() + core.get(1).len() + core.get(2).len() + 3, plus.get(0).len()).unwrap_or("")
+        identifiers := string.split(&tail, ".")
+        for id in identifiers.as_slice() {
+            if id.is_empty() { return false }
+            if string.parse_u64(id).is_some() && id.len() > 1 && id.bytes()[0] == 48 { return false }
+        }
+    }
+    for i in 0..value.len() {
+        b := value.bytes()[i]
+        if (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 45 || b == 46 || b == 43 { continue }
+        return false
+    }
+    return true
+}
+fn compare(a &string, b &string) i32 {
+    count := a.len()
+    var n = count
+    if b.len() < n { n = b.len() }
+    for i in 0..n { if a.bytes()[i] < b.bytes()[i] { return -1 }
+        if a.bytes()[i] > b.bytes()[i] { return 1 } }
+    if a.len() < b.len() { return -1 }
+    if a.len() > b.len() { return 1 }
+    return 0
+}
+fn length(out &mut Vec<u8>, size usize) {
+    var n = u64(size)
+    for i in 0..8 { out.push(u8(n & 255))
+        n = n >> 8 }
+}
+fn hash(path &string) Result<string, string> {
+    output := try run("sha256sum", "--", path)
+    return string.slice(&output, 0, 64).ok_or("Invalid SHA-256 output")
+}
+fn files(root &string, prefix &string, out &mut Vec<string>) Result<void, string> {
+    entries := try fs.read_dir(root).map_err(fn(failure io.Error) string { return "Cannot enumerate registry" })
+    for e in entries.as_slice() {
+        relative := prefix + e.name()
+        try require(safe_path(&relative), "Unsafe source path")
+        meta := try e.metadata().map_err(fn(failure io.Error) string { return "Cannot read metadata" })
+        if meta.is_dir { try files(e.path(), &(relative + "/"), out) } else if meta.is_file { out.push(relative) } else { return Err("Nonregular source file") }
+    }
+    return Ok(())
+}
+fn immutable(base &string) Result<void, string> {
+    var args: Vec<string> = Vec.new()
+    args.push("git")
+    args.push("ls-tree")
+    args.push("-r")
+    args.push("--name-only")
+    args.push(base.clone())
+    args.push("--")
+    args.push("site")
+    inventory := try command(&args)
+    lines := string.lines(&inventory)
+    for path in lines.as_slice() {
+        if path.is_empty() { continue }
+        previous := try run("git", "show", &(base + ":" + path))
+        if string.contains(path, "/files/") || string.ends_with(path, "/release.json") {
+            try require((try read(path)) == previous, &("Published bytes changed: " + path))
+        } else if string.ends_with(path, "/index.json") {
+            old := try json.parse(&previous).map_err(fn(e json.Error) string { return "Invalid previous index" })
+            current := try load(path)
+            values := try list(current)
+            for item in (try list(old)).as_slice() {
+                target := try item.as_text().ok_or("Invalid previous version")
+                var found = false
+                for value in values.as_slice() { if value.as_text().unwrap_or("") == target { found = true } }
+                try require(found, "Published version removed")
+            }
+        }
+    }
+    return Ok(())
+}
+fn validate(base &string, output &string) Result<void, string> {
+    // Reject symlinks before following metadata. Source bytes are never executed.
+    var find: Vec<string> = Vec.new()
+    find.push("find")
+    find.push("site")
+    find.push("-type")
+    find.push("l")
+    try require((try command(&find)).is_empty(), "Registry symlinks forbidden")
+    owners := try load("owners.json")
+    catalog_metadata := try load("catalog-metadata.json")
+    dirs := try fs.read_dir("site").map_err(fn(failure io.Error) string { return "Missing site" })
+    var catalog = json.Writer.new()
+    catalog.begin_object()
+    catalog.key("schema_version")
+    catalog.u64(1)
+    catalog.key("generator")
+    catalog.string("Tarn")
+    catalog.key("packages")
+    catalog.begin_array()
+    for dir in dirs.as_slice() {
+        meta := try dir.metadata().map_err(fn(failure io.Error) string { return "Cannot inspect registry" })
+        if !meta.is_dir || dir.name() == &"assets" { continue }
+        name := dir.name()
+        try require(valid_name(name), "Invalid package name")
+        owner := try field(&owners, name)
+        maintainers := try list(try field(&owner, "maintainers"))
+        try require(maintainers.len() > 0, "Missing maintainer")
+        info := try field(&catalog_metadata, name)
+        index := try list(try load(&(dir.path() + "/index.json")))
+        try require(index.len() > 0 && index.len() <= 512, "Invalid index size")
+        var seen: collections.Set<string> = collections.Set.new()
+        var count: usize = 0
+        for child in (try fs.read_dir(dir.path()).map_err(fn(failure io.Error) string { return "Cannot inspect package versions" })).as_slice() {
+            if (try child.metadata().map_err(fn(failure io.Error) string { return "Cannot inspect version" })).is_dir { count = count + 1 }
+        }
+        try require(count == index.len(), "Version inventory mismatch")
+        for v in index.as_slice() {
+            ver := try v.as_text().ok_or("Version is not text")
+            try require(version(&ver) && !seen.contains(&ver), "Invalid or repeated SemVer")
+            seen.insert(ver.clone())
+            root := dir.path() + "/" + &ver
+            record := try load(&(root + "/release.json"))
+            fields := try members(record.clone())
+            try require(fields.len() == 8, "Invalid release fields")
+            for f in fields.as_slice() {
+                try require(f.key == "schema" || f.key == "name" || f.key == "version" || f.key == "hash" || f.key == "entry" || f.key == "published" || f.key == "dependencies" || f.key == "files", "Unknown release field")
+            }
+            try require(record.u64("schema").unwrap_or(0) == 1 && (try text(&record, "name")) == name.clone() && (try text(&record, "version")) == ver, "Release identity mismatch")
+            stamp := try record.u64("published").ok_or("Invalid publication timestamp")
+            dependencies := try members(try field(&record, "dependencies"))
+            file_members := try members(try field(&record, "files"))
+            try require(file_members.len() > 0 && file_members.len() <= 1024, "Invalid source count")
+            var paths: Vec<string> = Vec.new()
+            for f in file_members.as_slice() { try require(safe_path(&f.key), "Unsafe source inventory")
+                paths.push(f.key.clone()) }
+            var actual: Vec<string> = Vec.new()
+            try files(&(root + "/files"), "", &mut actual)
+            try require(actual.len() == paths.len(), "Source inventory mismatch")
+            collections.sort(&mut paths, compare)
+            var bytes: Vec<u8> = Vec.new()
+            bytes.extend_from_slice("Tarn package source v1\0".bytes())
+            var total: u64 = 0
+            file_map := try field(&record, "files")
+            entry := try text(&record, "entry")
+            try require(file_map.get(&entry).is_some() && file_map.get("tarn.toml").is_some(), "Entry or manifest missing")
+            for path in paths.as_slice() {
+                native := root + "/files/" + path
+                data := try read(&native)
+                total = total + u64(data.len())
+                try require(total <= 33554432, "Package source size exceeded")
+                expected := try text(&file_map, path)
+                try require((try hash(&native)) == expected, &("Source hash mismatch: " + path))
+                length(&mut bytes, path.len())
+                bytes.extend_from_slice(path.bytes())
+                length(&mut bytes, data.len())
+                bytes.extend_from_slice(data.bytes())
+            }
+            // Caller supplies private build directory; no package file is overwritten.
+            temp := output + ".hash-input"
+            try fs.write(&temp, bytes.as_slice()).map_err(fn(failure io.Error) string { return "Cannot write hash input" })
+            result := hash(&temp)
+            try fs.remove_file(&temp).map_err(fn(failure io.Error) string { return "Cannot remove hash input" })
+            digest := try result
+            try require(digest == (try text(&record, "hash")), "Aggregate source hash mismatch")
+            catalog.begin_object()
+            catalog.key("name")
+            catalog.string(name)
+            catalog.key("version")
+            catalog.string(&ver)
+            catalog.key("hash")
+            catalog.string(&digest)
+            catalog.key("published")
+            catalog.u64(stamp)
+            catalog.key("description")
+            catalog.string(&(try text(&info, "description")))
+            catalog.key("repository")
+            catalog.string(&(try text(&owner, "repository")))
+            catalog.key("nativeLink")
+            catalog.string(&(try text(&info, "nativeLink")))
+            catalog.key("status")
+            catalog.string(&(try text(&owner, "status")))
+            catalog.key("dependencies")
+            catalog.u64(u64(dependencies.len()))
+            catalog.end_object()
+        }
+    }
+    catalog.end_array()
+    catalog.end_object()
+    if !base.is_empty() { try immutable(base) }
+    try fs.write_text(output, &catalog.finish()).map_err(fn(failure io.Error) string { return "Cannot write catalog" })
+    print("PASS: Tarn registry validation and catalog generation")
+    return Ok(())
+}
+fn main() {
+    match os.args() {
+        Ok(args) => {
+            var base = ""
+            if args.len() > 1 { base = args.get(1).clone() }
+            match validate(&base, "build/catalog.json") {
+                Ok(_) => {}
+                Err(message) => { print(message)
+                    os.exit(1) }
+            }
+        }
+        Err(_) => { os.exit(1) }
+    }
+}
