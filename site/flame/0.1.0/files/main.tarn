@@ -1,0 +1,72 @@
+// Example Flame microservice application demonstrating routes, params, groups, and middlewares.
+import "lib"
+import "io"
+
+fn auth_middleware(c &mut lib.Ctx) bool {
+    match c.header(&"authorization") {
+        Some(token) => {
+            if token == "Bearer secret-token" {
+                return true
+            }
+        }
+        None => {}
+    }
+    match c.json(401, "{\"error\": \"Unauthorized: missing or invalid Bearer token\"}") {
+        Ok(v) => {}
+        Err(e) => {}
+    }
+    return false
+}
+
+fn protected_dashboard(c &mut lib.Ctx) Result<void, lib.Error> {
+    return c.json(200, "{\"dashboard\": \"secret data\", \"status\": \"access granted\"}")
+}
+
+fn main() Result<void, io.Error> {
+    var app = lib.new()
+
+    // Global middlewares
+    app.use(lib.logger)
+    app.use(lib.cors)
+
+    // Basic routes
+    app.get("/", fn(c &mut lib.Ctx) Result<void, lib.Error> {
+        return c.text(200, &"🔥 Welcome to Flame on Tarn!")
+    })
+
+    // Dynamic path parameters
+    app.get("/users/:id", fn(c &mut lib.Ctx) Result<void, lib.Error> {
+        id := c.param(&"id")
+        return c.json(200, "{\"id\": " + id + ", \"name\": \"Cesar\", \"framework\": \"Flame\"}")
+    })
+
+    // Query parameters
+    app.get("/search", fn(c &mut lib.Ctx) Result<void, lib.Error> {
+        q := c.query(&"q")
+        page := c.query(&"page")
+        return c.json(200, "{\"query\": \"" + q + "\", \"page\": \"" + page + "\"}")
+    })
+
+    // Request body handling
+    app.post("/echo", fn(c &mut lib.Ctx) Result<void, lib.Error> {
+        body := c.body_string()
+        return c.text(200, &body)
+    })
+
+    // Route-level guard middleware
+    app.get("/dashboard", lib.guard(auth_middleware, protected_dashboard))
+
+    // Route groups
+    var api = lib.group("/api/v1")
+    api.get("/health", fn(c &mut lib.Ctx) Result<void, lib.Error> {
+        return c.json(200, "{\"status\": \"healthy\", \"engine\": \"tarn/flame\"}")
+    })
+    api.get("/metrics", fn(c &mut lib.Ctx) Result<void, lib.Error> {
+        return c.json(200, "{\"uptime_seconds\": 42, \"memory_bytes\": 1048576}")
+    })
+    app.mount(api)
+
+    addr := "127.0.0.1:3000"
+    print("🔥 Flame running at http://" + addr + "\n")
+    return app.listen(&addr)
+}

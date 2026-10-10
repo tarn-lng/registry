@@ -3,6 +3,10 @@
     "description": "Session D-Bus calls, name ownership and signals in Tarn. Backed by libdbus-1; Linux x86_64.",
     "nativeLink": "dbus-1"
   },
+  "flame": {
+    "description": "Fast, lightweight and expressive web framework for Tarn. Ergonomic routing, path parameters, middlewares and route groups; zero C dependencies.",
+    "nativeLink": ""
+  },
   "mongo": {
     "description": "Pure native MongoDB client driver and BSON engine for Tarn. OP_MSG protocol over TCP sockets; zero C dependencies.",
     "nativeLink": ""

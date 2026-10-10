@@ -1,0 +1,622 @@
+// Flame — Fast, lightweight and expressive web framework for Tarn.
+// Inspired by Fiber (Go) and Express (Node.js). Zero external C dependencies.
+import "http"
+import "io"
+import "string"
+
+/// High-level HTTP error representation with status code and human-readable message.
+pub struct Error {
+    pub status u16
+    pub message string
+}
+
+pub fn Error.new(status u16, message string) Error {
+    return Error{status: status, message: message}
+}
+
+pub fn Error.bad_request(message string) Error { return Error.new(400, message) }
+pub fn Error.unauthorized(message string) Error { return Error.new(401, message) }
+pub fn Error.forbidden(message string) Error { return Error.new(403, message) }
+pub fn Error.not_found(message string) Error { return Error.new(404, message) }
+pub fn Error.conflict(message string) Error { return Error.new(409, message) }
+pub fn Error.internal(message string) Error { return Error.new(500, message) }
+
+/// Route parameter or query string key-value pair.
+pub struct Param {
+    pub key string
+    pub val string
+}
+
+/// HTTP header key-value pair.
+pub struct Header {
+    pub name string
+    pub val string
+}
+
+/// HTTP request target breakdown (path and raw query string).
+pub struct Target {
+    pub path string
+    pub query string
+}
+
+/// Context passed to every Flame middleware and route handler.
+/// Encapsulates the HTTP request and accumulates the HTTP response.
+pub struct Ctx {
+    pub method string
+    pub path string
+    pub query_str string
+    req_headers Vec<Header>
+    req_body Vec<u8>
+    pub params Vec<Param>
+    pub query_params Vec<Param>
+    pub resp_status u16
+    pub resp_headers Vec<Header>
+    pub resp_body Vec<u8>
+}
+
+pub fn Ctx.new(method string, path string, query_str string, req_body Vec<u8>) Ctx {
+    return Ctx{
+        method: method,
+        path: path,
+        query_str: query_str,
+        req_headers: Vec.new(),
+        req_body: req_body,
+        params: Vec.new(),
+        query_params: Vec.new(),
+        resp_status: 200,
+        resp_headers: Vec.new(),
+        resp_body: Vec.new(),
+    }
+}
+
+pub fn Ctx.add_req_header(&mut self, name string, val string) {
+    self.req_headers.push(Header{name: name, val: val})
+}
+
+/// Return request header value by case-insensitive name if present.
+pub fn Ctx.header(&self, name &string) Option<string> {
+    for h in self.req_headers.as_slice() {
+        if &h.name == name {
+            return Some(h.val.clone())
+        }
+    }
+    return None
+}
+
+/// Retrieve path parameter value extracted from route template (e.g. `:id`).
+pub fn Ctx.param(&self, key &string) string {
+    for p in self.params.as_slice() {
+        if &p.key == key {
+            return p.val.clone()
+        }
+    }
+    return ""
+}
+
+/// Retrieve query parameter value extracted from URL query string (e.g. `?page=1`).
+pub fn Ctx.query(&self, key &string) string {
+    for q in self.query_params.as_slice() {
+        if &q.key == key {
+            return q.val.clone()
+        }
+    }
+    return ""
+}
+
+/// Borrow raw request body bytes.
+pub fn Ctx.body(&self) &[]u8 {
+    return self.req_body.as_slice()
+}
+
+/// Decode request body bytes as a UTF-8 string.
+pub fn Ctx.body_string(&self) string {
+    match string.from_utf8(self.req_body.as_slice()) {
+        Some(s) => { return s }
+        None => { return "" }
+    }
+}
+
+/// Set the HTTP response status code.
+pub fn Ctx.status(&mut self, status u16) {
+    self.resp_status = status
+}
+
+/// Add an HTTP response header.
+pub fn Ctx.set_header(&mut self, name string, val string) {
+    self.resp_headers.push(Header{name: name, val: val})
+}
+
+/// Send plain text response with content-type `text/plain; charset=utf-8`.
+pub fn Ctx.text(&mut self, status u16, text &string) Result<void, Error> {
+    self.resp_status = status
+    self.set_header("content-type", "text/plain; charset=utf-8")
+    self.resp_body = Vec.new()
+    for b in text.bytes() {
+        self.resp_body.push(b)
+    }
+    return Ok(())
+}
+
+/// Send JSON response with content-type `application/json`.
+pub fn Ctx.json(&mut self, status u16, json string) Result<void, Error> {
+    self.resp_status = status
+    self.set_header("content-type", "application/json")
+    self.resp_body = Vec.new()
+    for b in json.bytes() {
+        self.resp_body.push(b)
+    }
+    return Ok(())
+}
+
+/// Send HTML response with content-type `text/html; charset=utf-8`.
+pub fn Ctx.html(&mut self, status u16, html &string) Result<void, Error> {
+    self.resp_status = status
+    self.set_header("content-type", "text/html; charset=utf-8")
+    self.resp_body = Vec.new()
+    for b in html.bytes() {
+        self.resp_body.push(b)
+    }
+    return Ok(())
+}
+
+/// Send arbitrary byte payload with custom content-type.
+pub fn Ctx.bytes(&mut self, status u16, content_type string, data Vec<u8>) Result<void, Error> {
+    self.resp_status = status
+    self.set_header("content-type", content_type)
+    self.resp_body = data
+    return Ok(())
+}
+
+/// Send an empty response with the specified status code (e.g. 204 No Content).
+pub fn Ctx.send_status(&mut self, status u16) Result<void, Error> {
+    self.resp_status = status
+    self.resp_body = Vec.new()
+    return Ok(())
+}
+
+/// Redirect request to location with HTTP redirect status (e.g. 302 Found).
+pub fn Ctx.redirect(&mut self, status u16, location &string) Result<void, Error> {
+    self.resp_status = status
+    self.set_header("location", location.clone())
+    self.resp_body = Vec.new()
+    return Ok(())
+}
+
+/// Build the final `http.Response` ready to be written to client.
+pub fn Ctx.build_response(self) Result<http.Response, http.Error> {
+    var resp = try http.Response.bytes(self.resp_status, self.resp_body)
+    for h in self.resp_headers.as_slice() {
+        match http.Header.text(&h.name, &h.val) {
+            Ok(hdr) => {
+                resp = try resp.header(hdr)
+            }
+            Err(e) => {}
+        }
+    }
+    return Ok(resp)
+}
+
+fn split_segments(path &string) Vec<string> {
+    var parts: Vec<string> = Vec.new()
+    var current: Vec<u8> = Vec.new()
+    for b in path.bytes() {
+        if b == 47 { // '/'
+            if current.len() > 0 {
+                match string.from_utf8(current.as_slice()) {
+                    Some(s) => { parts.push(s) }
+                    None => {}
+                }
+                current = Vec.new()
+            }
+        } else {
+            current.push(b)
+        }
+    }
+    if current.len() > 0 {
+        match string.from_utf8(current.as_slice()) {
+            Some(s) => { parts.push(s) }
+            None => {}
+        }
+    }
+    return parts
+}
+
+fn match_route(pattern &string, path &string, out_params &mut Vec<Param>) bool {
+    if pattern == path {
+        return true
+    }
+    pat_segs := split_segments(pattern)
+    path_segs := split_segments(path)
+
+    if pat_segs.len() != path_segs.len() {
+        if pat_segs.len() > 0 {
+            last := pat_segs.get(pat_segs.len() - 1)
+            if last.len() > 0 && last.bytes()[0] == 42 { // '*'
+                var prefix_matches = true
+                for i in 0..(pat_segs.len() - 1) {
+                    if i >= path_segs.len() {
+                        prefix_matches = false
+                    } else {
+                        p_seg := pat_segs.get(i)
+                        act_seg := path_segs.get(i)
+                        if p_seg.len() > 0 && p_seg.bytes()[0] == 58 {
+                            param_key_bytes := p_seg.bytes()
+                            match string.from_utf8(&param_key_bytes[1..]) {
+                                Some(k) => { out_params.push(Param{key: k, val: act_seg.clone()}) }
+                                None => {}
+                            }
+                        } else {
+                            if p_seg != act_seg {
+                                prefix_matches = false
+                            }
+                        }
+                    }
+                }
+                if prefix_matches {
+                    var wildcard_val: Vec<u8> = Vec.new()
+                    for j in (pat_segs.len() - 1)..path_segs.len() {
+                        if wildcard_val.len() > 0 {
+                            wildcard_val.push(47)
+                        }
+                        seg_bytes := path_segs.get(j).bytes()
+                        for b in seg_bytes {
+                            wildcard_val.push(b)
+                        }
+                    }
+                    var wildcard_key = "path"
+                    if last.len() > 1 {
+                        l_bytes := last.bytes()
+                        match string.from_utf8(&l_bytes[1..]) {
+                            Some(k) => { wildcard_key = k }
+                            None => {}
+                        }
+                    }
+                    match string.from_utf8(wildcard_val.as_slice()) {
+                        Some(w) => { out_params.push(Param{key: wildcard_key, val: w}) }
+                        None => {}
+                    }
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    for i in 0..pat_segs.len() {
+        p_seg := pat_segs.get(i)
+        act_seg := path_segs.get(i)
+        if p_seg.len() > 0 && p_seg.bytes()[0] == 58 { // ':'
+            param_bytes := p_seg.bytes()
+            match string.from_utf8(&param_bytes[1..]) {
+                Some(k) => {
+                    out_params.push(Param{key: k, val: act_seg.clone()})
+                }
+                None => {}
+            }
+        } else {
+            if p_seg != act_seg {
+                return false
+            }
+        }
+    }
+    return true
+}
+
+fn parse_target(target &string) Target {
+    var split_idx = target.len()
+    for i in 0..target.len() {
+        if target.bytes()[i] == 63 { // '?'
+            split_idx = i
+            break
+        }
+    }
+    var path = target.clone()
+    var query = ""
+    if split_idx < target.len() {
+        match string.from_utf8(&target.bytes()[..split_idx]) {
+            Some(p) => { path = p }
+            None => {}
+        }
+        match string.from_utf8(&target.bytes()[(split_idx + 1)..]) {
+            Some(q) => { query = q }
+            None => {}
+        }
+    }
+    return Target{path: path, query: query}
+}
+
+fn parse_query_params(query &string, out_params &mut Vec<Param>) {
+    if query.len() == 0 {
+        return
+    }
+    var start = usize(0)
+    for i in 0..(query.len() + 1) {
+        if i == query.len() || query.bytes()[i] == 38 { // '&'
+            if i > start {
+                pair := &query.bytes()[start..i]
+                var eq_idx = pair.len()
+                for j in 0..pair.len() {
+                    if pair[j] == 61 { // '='
+                        eq_idx = j
+                        break
+                    }
+                }
+                var key = ""
+                var val = ""
+                match string.from_utf8(&pair[..eq_idx]) {
+                    Some(k) => { key = k }
+                    None => {}
+                }
+                if eq_idx < pair.len() {
+                    match string.from_utf8(&pair[(eq_idx + 1)..]) {
+                        Some(v) => { val = v }
+                        None => {}
+                    }
+                }
+                if key.len() > 0 {
+                    out_params.push(Param{key: key, val: val})
+                }
+            }
+            start = i + 1
+        }
+    }
+}
+
+/// Registered HTTP route entry.
+pub struct Route {
+    pub method string
+    pub pattern string
+    pub handler fn(&mut Ctx) Result<void, Error>
+}
+
+/// Route group prefixing paths and organizing modular handlers.
+pub struct Group {
+    pub prefix string
+    pub routes Vec<Route>
+}
+
+pub fn Group.new(prefix string) Group {
+    return Group{prefix: prefix, routes: Vec.new()}
+}
+
+pub fn Group.get(&mut self, pattern string, handler fn(&mut Ctx) Result<void, Error>) {
+    self.routes.push(Route{method: "GET", pattern: pattern, handler: handler})
+}
+
+pub fn Group.post(&mut self, pattern string, handler fn(&mut Ctx) Result<void, Error>) {
+    self.routes.push(Route{method: "POST", pattern: pattern, handler: handler})
+}
+
+pub fn Group.put(&mut self, pattern string, handler fn(&mut Ctx) Result<void, Error>) {
+    self.routes.push(Route{method: "PUT", pattern: pattern, handler: handler})
+}
+
+pub fn Group.delete(&mut self, pattern string, handler fn(&mut Ctx) Result<void, Error>) {
+    self.routes.push(Route{method: "DELETE", pattern: pattern, handler: handler})
+}
+
+pub fn Group.patch(&mut self, pattern string, handler fn(&mut Ctx) Result<void, Error>) {
+    self.routes.push(Route{method: "PATCH", pattern: pattern, handler: handler})
+}
+
+pub fn Group.options(&mut self, pattern string, handler fn(&mut Ctx) Result<void, Error>) {
+    self.routes.push(Route{method: "OPTIONS", pattern: pattern, handler: handler})
+}
+
+pub fn Group.head(&mut self, pattern string, handler fn(&mut Ctx) Result<void, Error>) {
+    self.routes.push(Route{method: "HEAD", pattern: pattern, handler: handler})
+}
+
+/// Mount a subgroup inside this group (nested prefixing).
+pub fn Group.mount(&mut self, subgroup Group) {
+    var g = subgroup
+    var reversed: Vec<Route> = Vec.new()
+    for {
+        match g.routes.pop() {
+            Some(r) => { reversed.push(r) }
+            None => { break }
+        }
+    }
+    for {
+        match reversed.pop() {
+            Some(r) => {
+                self.routes.push(Route{
+                    method: r.method,
+                    pattern: g.prefix.clone() + r.pattern,
+                    handler: r.handler,
+                })
+            }
+            None => { break }
+        }
+    }
+}
+
+/// The core Flame application container.
+pub struct App {
+    pub routes Vec<Route>
+    pub middlewares Vec<fn(&mut Ctx) bool>
+}
+
+pub fn new() App {
+    return App{
+        routes: Vec.new(),
+        middlewares: Vec.new(),
+    }
+}
+
+pub fn group(prefix string) Group {
+    return Group.new(prefix)
+}
+
+/// Register a global middleware that executes before every route handler.
+/// Returning `false` short-circuits the pipeline and immediately sends the response.
+pub fn App.use(&mut self, mw fn(&mut Ctx) bool) {
+    self.middlewares.push(mw)
+}
+
+pub fn App.get(&mut self, pattern string, handler fn(&mut Ctx) Result<void, Error>) {
+    self.routes.push(Route{method: "GET", pattern: pattern, handler: handler})
+}
+
+pub fn App.post(&mut self, pattern string, handler fn(&mut Ctx) Result<void, Error>) {
+    self.routes.push(Route{method: "POST", pattern: pattern, handler: handler})
+}
+
+pub fn App.put(&mut self, pattern string, handler fn(&mut Ctx) Result<void, Error>) {
+    self.routes.push(Route{method: "PUT", pattern: pattern, handler: handler})
+}
+
+pub fn App.delete(&mut self, pattern string, handler fn(&mut Ctx) Result<void, Error>) {
+    self.routes.push(Route{method: "DELETE", pattern: pattern, handler: handler})
+}
+
+pub fn App.patch(&mut self, pattern string, handler fn(&mut Ctx) Result<void, Error>) {
+    self.routes.push(Route{method: "PATCH", pattern: pattern, handler: handler})
+}
+
+pub fn App.options(&mut self, pattern string, handler fn(&mut Ctx) Result<void, Error>) {
+    self.routes.push(Route{method: "OPTIONS", pattern: pattern, handler: handler})
+}
+
+pub fn App.head(&mut self, pattern string, handler fn(&mut Ctx) Result<void, Error>) {
+    self.routes.push(Route{method: "HEAD", pattern: pattern, handler: handler})
+}
+
+/// Mount a route group with its prefix into the application.
+pub fn App.mount(&mut self, grp Group) {
+    var g = grp
+    var reversed: Vec<Route> = Vec.new()
+    for {
+        match g.routes.pop() {
+            Some(r) => { reversed.push(r) }
+            None => { break }
+        }
+    }
+    for {
+        match reversed.pop() {
+            Some(r) => {
+                self.routes.push(Route{
+                    method: r.method,
+                    pattern: g.prefix.clone() + r.pattern,
+                    handler: r.handler,
+                })
+            }
+            None => { break }
+        }
+    }
+}
+
+/// Dispatch an incoming HTTP request through middlewares and route matching.
+pub fn App.handle(&self, req &http.Request) Result<http.Response, http.Error> {
+    target := parse_target(req.target())
+    var req_body: Vec<u8> = Vec.new()
+    for b in req.body() {
+        req_body.push(b)
+    }
+
+    var ctx = Ctx.new(req.method().clone(), target.path, target.query, req_body)
+    for h in req.headers() {
+        match h.value_text() {
+            Ok(val) => {
+                ctx.add_req_header(h.name().clone(), val)
+            }
+            Err(e) => {}
+        }
+    }
+    parse_query_params(&ctx.query_str, &mut ctx.query_params)
+
+    // Run global middlewares
+    for mw in self.middlewares.as_slice() {
+        if !(mw)(&mut ctx) {
+            return ctx.build_response()
+        }
+    }
+
+    // Match route
+    var matched = false
+    var method_match = false
+    for r in self.routes.as_slice() {
+        var params: Vec<Param> = Vec.new()
+        if match_route(&r.pattern, &ctx.path, &mut params) {
+            method_match = true
+            if r.method == ctx.method {
+                ctx.params = params
+                match (r.handler)(&mut ctx) {
+                    Ok(v) => {}
+                    Err(e) => {
+                        ctx.status(e.status)
+                        ctx.set_header("content-type", "application/json")
+                        ctx.resp_body = Vec.new()
+                        err_json := "{\"error\": \"" + e.message + "\"}"
+                        for b in err_json.bytes() {
+                            ctx.resp_body.push(b)
+                        }
+                    }
+                }
+                matched = true
+                break
+            }
+        }
+    }
+
+    if !matched {
+        if method_match {
+            ctx.status(405)
+            match ctx.text(405, &"Method Not Allowed") {
+                Ok(v) => {}
+                Err(e) => {}
+            }
+        } else {
+            ctx.status(404)
+            match ctx.text(404, &"Not Found") {
+                Ok(v) => {}
+                Err(e) => {}
+            }
+        }
+    }
+
+    return ctx.build_response()
+}
+
+/// Listen and serve HTTP requests on the specified address (e.g. `"127.0.0.1:3000"`).
+pub fn App.listen(&self, addr &string) Result<void, io.Error> {
+    return http.serve(addr, fn(req &http.Request) Result<http.Response, http.Error> {
+        return self.handle(req)
+    })
+}
+
+// -----------------------------------------------------------------------------
+// Built-in Middlewares & Decorators
+// -----------------------------------------------------------------------------
+
+/// Logger middleware: prints incoming HTTP method and request path.
+pub fn logger(c &mut Ctx) bool {
+    print("[flame] ")
+    print(c.method.clone())
+    print(" ")
+    print(c.path.clone())
+    print("\n")
+    return true
+}
+
+/// CORS middleware: enables standard CORS headers and answers OPTIONS preflights.
+pub fn cors(c &mut Ctx) bool {
+    c.set_header("access-control-allow-origin", "*")
+    c.set_header("access-control-allow-methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
+    c.set_header("access-control-allow-headers", "content-type, authorization, accept")
+    if c.method == "OPTIONS" {
+        c.status(204)
+        return false
+    }
+    return true
+}
+
+/// Wrap a route handler with an isolated route-level middleware guard.
+pub fn guard(mw fn(&mut Ctx) bool, handler fn(&mut Ctx) Result<void, Error>) fn(&mut Ctx) Result<void, Error> {
+    return move fn(c &mut Ctx) Result<void, Error> {
+        if !(mw)(&mut *c) {
+            return Ok(())
+        }
+        return (handler)(c)
+    }
+}

@@ -1,0 +1,15 @@
+{
+  "dependencies": {},
+  "entry": "lib.tarn",
+  "files": {
+    "README.md": "da043d9736b9962c790cb226785e969d9c1b2db1f827b913264503f67ef2fb4a",
+    "lib.tarn": "23f4d872e4bc2f710c5c25c610fc0a94ccf21f8dbdb9fe68b3f43a4705536c5d",
+    "main.tarn": "7dc49927c75f4401d174a511c5d8c711065ba68ac2c12026535a7dc9534777ff",
+    "tarn.toml": "5d75088aa7840a9b8aa5bfc36692e668fade98de299d2c44500e90bf2bb46cd9"
+  },
+  "hash": "93f4cb8b6b15dcd696d0c245f6f7c3731ae3f3b8ef5a888cfaf31267dd64d278",
+  "name": "flame",
+  "published": 1791599480,
+  "schema": 1,
+  "version": "0.1.0"
+}
