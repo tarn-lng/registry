@@ -1,0 +1,15 @@
+{
+  "dependencies": {},
+  "entry": "lib.tarn",
+  "files": {
+    "README.md": "a03128de804989cac2eb3f225e72d972ecfd02c7d6acf443d080fdb2949bbd7e",
+    "lib.tarn": "6a85fb1e69734cfab20d63a64c0a6065740e2dff51de66d1b8dbd234e7557813",
+    "main.tarn": "a904c8e70353a03753d0699f22e2b965e335f7a342d45628516cfcb0efdf3455",
+    "tarn.toml": "52a4969de4c9ba7362d0cb3fafc591a8483080c1f9ccf82748fde58cad3d2aca"
+  },
+  "hash": "686a805c21436722b77c737504df8451fd906d7fb4df5247b3633a852e4d681e",
+  "name": "sqlite",
+  "published": 1791596527,
+  "schema": 1,
+  "version": "0.1.0"
+}

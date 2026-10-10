@@ -13,5 +13,10 @@
     "maintainers": ["cesardev31"],
     "repository": "https://github.com/tarn-lng/tarn-postgres",
     "status": "experimental"
+  },
+  "sqlite": {
+    "maintainers": ["cesardev31"],
+    "repository": "https://github.com/tarn-lng/tarn-sqlite",
+    "status": "experimental"
   }
 }

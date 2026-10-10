@@ -1,0 +1,421 @@
+// tarn-sqlite: Official SQLite Driver for Tarn
+// High-level safe bindings over SQLite C FFI (libsqlite3).
+//
+// Applications never see raw pointers or `unsafe`. Connection, Db and Statement are owned,
+// non-Copy and not Transfer (raw pointers), so they stay on one thread.
+// Build/run with `--link sqlite3` (or ensure libsqlite3 is accessible to the linker).
+
+import "ffi"
+
+struct RawDb {}
+struct RawStatement {}
+
+extern "C" fn sqlite3_open(path *u8, db *mut *mut RawDb) i32
+extern "C" fn sqlite3_close_v2(db *mut RawDb) i32
+extern "C" fn sqlite3_errmsg(db *mut RawDb) *u8
+extern "C" fn sqlite3_exec(db *mut RawDb, sql *u8, callback *mut u8, argument *mut u8, error *mut *mut u8) i32
+extern "C" fn sqlite3_prepare_v2(db *mut RawDb, sql *u8, bytes i32, statement *mut *mut RawStatement, tail *mut *u8) i32
+extern "C" fn sqlite3_finalize(statement *mut RawStatement) i32
+extern "C" fn sqlite3_step(statement *mut RawStatement) i32
+extern "C" fn sqlite3_reset(statement *mut RawStatement) i32
+extern "C" fn sqlite3_bind_text(statement *mut RawStatement, index i32, text *u8, bytes i32, destructor *mut u8) i32
+extern "C" fn sqlite3_bind_int64(statement *mut RawStatement, index i32, value i64) i32
+extern "C" fn sqlite3_bind_double(statement *mut RawStatement, index i32, value f64) i32
+extern "C" fn sqlite3_bind_null(statement *mut RawStatement, index i32) i32
+extern "C" fn sqlite3_column_count(statement *mut RawStatement) i32
+extern "C" fn sqlite3_column_name(statement *mut RawStatement, column i32) *u8
+extern "C" fn sqlite3_column_int64(statement *mut RawStatement, column i32) i64
+extern "C" fn sqlite3_column_double(statement *mut RawStatement, column i32) f64
+extern "C" fn sqlite3_column_text(statement *mut RawStatement, column i32) *u8
+extern "C" fn sqlite3_column_bytes(statement *mut RawStatement, column i32) i32
+extern "C" fn sqlite3_column_type(statement *mut RawStatement, column i32) i32
+extern "C" fn sqlite3_last_insert_rowid(db *mut RawDb) i64
+extern "C" fn sqlite3_changes(db *mut RawDb) i32
+extern "C" fn sqlite3_free(memory *mut u8)
+
+/// SQLite result code and message (https://sqlite.org/rescode.html).
+pub struct Error {
+    pub code    i32
+    pub message string
+}
+
+pub fn Error.new(code i32, message string) Error {
+    return Error{code: code, message: message}
+}
+
+pub struct Row {
+    pub values Vec<string>
+}
+
+pub fn Row.new() Row {
+    return Row{values: Vec.new()}
+}
+
+pub fn Row.get(&self, index usize) Option<string> {
+    if index >= self.values.len() {
+        return None
+    }
+    return Some(self.values.get(index).clone())
+}
+
+pub fn Row.get_or(&self, index usize, fallback string) string {
+    match self.get(index) {
+        Some(val) => return val
+        None => return fallback
+    }
+}
+
+pub fn Row.len(&self) usize {
+    return self.values.len()
+}
+
+pub struct QueryResult {
+    pub columns Vec<string>
+    pub rows    Vec<Row>
+    pub changes i64
+}
+
+pub fn QueryResult.len(&self) usize {
+    return self.rows.len()
+}
+
+pub fn QueryResult.is_empty(&self) bool {
+    return self.rows.len() == 0
+}
+
+fn failure(db *mut RawDb, code i32) Error {
+    var message = "out of memory"
+    if !ffi.is_null(ffi.to_const(db)) {
+        unsafe {
+            match ffi.string_from_c(sqlite3_errmsg(db)) {
+                Some(text) => { message = text }
+                None => { message = "invalid UTF-8 in SQLite message" }
+            }
+        }
+    }
+    return Error{code: code, message: message}
+}
+
+fn c_text(value &string) Result<ffi.CString, Error> {
+    match ffi.CString.new(value) {
+        Some(c) => { return Ok(c) }
+        None => { return Err(Error{code: 25, message: "text contains NUL"}) }
+    }
+}
+
+pub struct Statement {
+    raw *mut RawStatement
+    db  *mut RawDb
+}
+
+fn Statement.check(&self, code i32) Result<void, Error> {
+    if code != 0 { return Err(failure(self.db, code)) }
+    return Ok(())
+}
+
+/// Parameters are numbered from 1, as in SQLite. SQLite copies the text.
+pub fn Statement.bind_text(&mut self, index i32, value &string) Result<void, Error> {
+    copied := try c_text(value)
+    // SQLITE_TRANSIENT, ((void*)-1): SQLite makes its own copy before returning.
+    transient: *mut u8 := ffi.from_address(18446744073709551615)
+    var code: i32 = 0
+    unsafe { code = sqlite3_bind_text(self.raw, index, copied.as_ptr(), i32(copied.len()), transient) }
+    return self.check(code)
+}
+
+pub fn Statement.bind_i64(&mut self, index i32, value i64) Result<void, Error> {
+    var code: i32 = 0
+    unsafe { code = sqlite3_bind_int64(self.raw, index, value) }
+    return self.check(code)
+}
+
+pub fn Statement.bind_f64(&mut self, index i32, value f64) Result<void, Error> {
+    var code: i32 = 0
+    unsafe { code = sqlite3_bind_double(self.raw, index, value) }
+    return self.check(code)
+}
+
+pub fn Statement.bind_null(&mut self, index i32) Result<void, Error> {
+    var code: i32 = 0
+    unsafe { code = sqlite3_bind_null(self.raw, index) }
+    return self.check(code)
+}
+
+/// Advance: true when a row is available, false when the statement is done.
+pub fn Statement.step(&mut self) Result<bool, Error> {
+    var code: i32 = 0
+    unsafe { code = sqlite3_step(self.raw) }
+    if code == 100 { return Ok(true) }
+    if code == 101 { return Ok(false) }
+    return Err(failure(self.db, code))
+}
+
+/// Run a statement that returns no rows.
+pub fn Statement.run(&mut self) Result<void, Error> {
+    row := try self.step()
+    return Ok(())
+}
+
+/// Rewind to run again with new bindings.
+pub fn Statement.reset(&mut self) Result<void, Error> {
+    var code: i32 = 0
+    unsafe { code = sqlite3_reset(self.raw) }
+    return self.check(code)
+}
+
+pub fn Statement.column_count(&self) i32 {
+    var count: i32 = 0
+    unsafe { count = sqlite3_column_count(self.raw) }
+    return count
+}
+
+pub fn Statement.column_name(&self, column i32) Result<string, Error> {
+    var ptr: *u8 = ffi.to_const(ffi.null())
+    unsafe { ptr = sqlite3_column_name(self.raw, column) }
+    if ffi.is_null(ptr) { return Ok("") }
+    unsafe {
+        match ffi.string_from_c(ptr) {
+            Some(s) => { return Ok(s) }
+            None => { return Err(Error{code: 20, message: "column name is not UTF-8 text"}) }
+        }
+    }
+}
+
+pub fn Statement.column_i64(&self, column i32) i64 {
+    var value: i64 = 0
+    unsafe { value = sqlite3_column_int64(self.raw, column) }
+    return value
+}
+
+pub fn Statement.column_f64(&self, column i32) f64 {
+    var value: f64 = 0.0
+    unsafe { value = sqlite3_column_double(self.raw, column) }
+    return value
+}
+
+pub fn Statement.column_type(&self, column i32) i32 {
+    var kind: i32 = 0
+    unsafe { kind = sqlite3_column_type(self.raw, column) }
+    return kind
+}
+
+pub fn Statement.column_is_null(&self, column i32) bool {
+    return self.column_type(column) == 5
+}
+
+/// Owned copy of a text column; NULL reads as "" (check column_is_null).
+pub fn Statement.column_text(&self, column i32) Result<string, Error> {
+    var data: *u8 = ffi.to_const(ffi.null())
+    var length: i32 = 0
+    unsafe {
+        data = sqlite3_column_text(self.raw, column)
+        length = sqlite3_column_bytes(self.raw, column)
+    }
+    if ffi.is_null(data) || length <= 0 { return Ok("") }
+    var bytes: Vec<u8> = Vec.new()
+    unsafe { bytes = ffi.copy_bytes(data, usize(length)) }
+    match string_from_utf8(bytes.as_slice()) {
+        Some(value) => { return Ok(value) }
+        None => { return Err(Error{code: 20, message: "column is not UTF-8 text"}) }
+    }
+}
+
+pub fn Statement.finalize(self) Result<void, Error> {
+    var code: i32 = 0
+    unsafe { code = sqlite3_finalize(self.raw) }
+    if code != 0 { return Err(failure(self.db, code)) }
+    return Ok(())
+}
+
+fn internal_query(raw_db *mut RawDb, sql &string) Result<QueryResult, Error> {
+    stmt_c := try c_text(sql)
+    var raw_stmt: *mut RawStatement = ffi.null()
+    var code: i32 = 0
+    unsafe { code = sqlite3_prepare_v2(raw_db, stmt_c.as_ptr(), -1, ffi.of_mut(&mut raw_stmt), ffi.null()) }
+    if code != 0 { return Err(failure(raw_db, code)) }
+    if ffi.is_null(ffi.to_const(raw_stmt)) { return Err(Error{code: 21, message: "empty statement"}) }
+
+    var stmt = Statement{raw: raw_stmt, db: raw_db}
+    var columns: Vec<string> = Vec.new()
+    col_count := stmt.column_count()
+    var c_idx: i32 = 0
+    for c_idx < col_count {
+        col_name := try stmt.column_name(c_idx)
+        columns.push(col_name)
+        c_idx = c_idx + 1
+    }
+
+    var rows: Vec<Row> = Vec.new()
+    for try stmt.step() {
+        var row_vals: Vec<string> = Vec.new()
+        var i: i32 = 0
+        for i < col_count {
+            if stmt.column_is_null(i) {
+                row_vals.push("NULL")
+            } else {
+                val := try stmt.column_text(i)
+                row_vals.push(val)
+            }
+            i = i + 1
+        }
+        rows.push(Row{values: row_vals})
+    }
+    try stmt.finalize()
+    return Ok(QueryResult{columns: columns, rows: rows, changes: 0})
+}
+
+// --- Connection and Db representations ---
+
+pub struct Connection {
+    raw *mut RawDb
+}
+
+pub struct Db {
+    raw *mut RawDb
+}
+
+pub fn open(path &string) Result<Db, Error> {
+    name := try c_text(path)
+    var raw: *mut RawDb = ffi.null()
+    var code: i32 = 0
+    unsafe { code = sqlite3_open(name.as_ptr(), ffi.of_mut(&mut raw)) }
+    if code != 0 {
+        error := failure(raw, code)
+        unsafe { closed := sqlite3_close_v2(raw) }
+        return Err(error)
+    }
+    return Ok(Db{raw: raw})
+}
+
+pub fn connect(path &string) Result<Connection, Error> {
+    db := try open(path)
+    return Ok(Connection{raw: db.raw})
+}
+
+pub fn Connection.open(path &string) Result<Connection, Error> {
+    return connect(path)
+}
+
+pub fn Connection.into_db(self) Db {
+    return Db{raw: self.raw}
+}
+
+pub fn Connection.close(self) Result<void, Error> {
+    var code: i32 = 0
+    unsafe { code = sqlite3_close_v2(self.raw) }
+    if code != 0 { return Err(Error{code: code, message: "close failed"}) }
+    return Ok(())
+}
+
+pub fn Connection.exec(&mut self, sql &string) Result<void, Error> {
+    statement := try c_text(sql)
+    var message: *mut u8 = ffi.null()
+    var code: i32 = 0
+    unsafe { code = sqlite3_exec(self.raw, statement.as_ptr(), ffi.null(), ffi.null(), ffi.of_mut(&mut message)) }
+    if code == 0 { return Ok(()) }
+    var error = Error{code: code, message: "exec failed"}
+    if !ffi.is_null(ffi.to_const(message)) {
+        unsafe {
+            match ffi.string_from_c(ffi.to_const(message)) {
+                Some(m) => { error.message = m }
+                None => {}
+            }
+            sqlite3_free(message)
+        }
+    }
+    return Err(error)
+}
+
+pub fn Connection.execute(&mut self, sql &string) Result<i64, Error> {
+    try self.exec(sql)
+    return Ok(self.changes())
+}
+
+pub fn Connection.query(&mut self, sql &string) Result<QueryResult, Error> {
+    return internal_query(self.raw, sql)
+}
+
+pub fn Connection.prepare(&mut self, sql &string) Result<Statement, Error> {
+    statement := try c_text(sql)
+    var raw: *mut RawStatement = ffi.null()
+    var code: i32 = 0
+    unsafe { code = sqlite3_prepare_v2(self.raw, statement.as_ptr(), -1, ffi.of_mut(&mut raw), ffi.null()) }
+    if code != 0 { return Err(failure(self.raw, code)) }
+    if ffi.is_null(ffi.to_const(raw)) { return Err(Error{code: 21, message: "empty statement"}) }
+    return Ok(Statement{raw: raw, db: self.raw})
+}
+
+pub fn Connection.last_insert_id(&self) i64 {
+    var id: i64 = 0
+    unsafe { id = sqlite3_last_insert_rowid(self.raw) }
+    return id
+}
+
+pub fn Connection.changes(&self) i64 {
+    var n: i32 = 0
+    unsafe { n = sqlite3_changes(self.raw) }
+    return i64(n)
+}
+
+// --- Methods on Db (identical semantics for backwards compatibility) ---
+
+pub fn Db.into_connection(self) Connection {
+    return Connection{raw: self.raw}
+}
+
+pub fn Db.close(self) Result<void, Error> {
+    var code: i32 = 0
+    unsafe { code = sqlite3_close_v2(self.raw) }
+    if code != 0 { return Err(Error{code: code, message: "close failed"}) }
+    return Ok(())
+}
+
+pub fn Db.exec(&mut self, sql &string) Result<void, Error> {
+    statement := try c_text(sql)
+    var message: *mut u8 = ffi.null()
+    var code: i32 = 0
+    unsafe { code = sqlite3_exec(self.raw, statement.as_ptr(), ffi.null(), ffi.null(), ffi.of_mut(&mut message)) }
+    if code == 0 { return Ok(()) }
+    var error = Error{code: code, message: "exec failed"}
+    if !ffi.is_null(ffi.to_const(message)) {
+        unsafe {
+            match ffi.string_from_c(ffi.to_const(message)) {
+                Some(m) => { error.message = m }
+                None => {}
+            }
+            sqlite3_free(message)
+        }
+    }
+    return Err(error)
+}
+
+pub fn Db.execute(&mut self, sql &string) Result<i64, Error> {
+    try self.exec(sql)
+    return Ok(self.changes())
+}
+
+pub fn Db.query(&mut self, sql &string) Result<QueryResult, Error> {
+    return internal_query(self.raw, sql)
+}
+
+pub fn Db.prepare(&mut self, sql &string) Result<Statement, Error> {
+    statement := try c_text(sql)
+    var raw: *mut RawStatement = ffi.null()
+    var code: i32 = 0
+    unsafe { code = sqlite3_prepare_v2(self.raw, statement.as_ptr(), -1, ffi.of_mut(&mut raw), ffi.null()) }
+    if code != 0 { return Err(failure(self.raw, code)) }
+    if ffi.is_null(ffi.to_const(raw)) { return Err(Error{code: 21, message: "empty statement"}) }
+    return Ok(Statement{raw: raw, db: self.raw})
+}
+
+pub fn Db.last_insert_id(&self) i64 {
+    var id: i64 = 0
+    unsafe { id = sqlite3_last_insert_rowid(self.raw) }
+    return id
+}
+
+pub fn Db.changes(&self) i64 {
+    var n: i32 = 0
+    unsafe { n = sqlite3_changes(self.raw) }
+    return i64(n)
+}
