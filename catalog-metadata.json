@@ -3,6 +3,10 @@
     "description": "Session D-Bus calls, name ownership and signals in Tarn. Backed by libdbus-1; Linux x86_64.",
     "nativeLink": "dbus-1"
   },
+  "mysql": {
+    "description": "Pure native MySQL and MariaDB client driver for Tarn. Wire Protocol over TCP sockets; zero C dependencies.",
+    "nativeLink": ""
+  },
   "postgres": {
     "description": "Pure native PostgreSQL client driver for Tarn. Protocol 3.0 over TCP sockets; zero C dependencies.",
     "nativeLink": ""

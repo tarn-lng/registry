@@ -1,0 +1,602 @@
+import "net"
+import "string"
+
+pub struct Config {
+    pub host     string
+    pub port     u16
+    pub user     string
+    pub password string
+    pub database string
+}
+
+pub fn Config.default() Config {
+    return Config{
+        host: "127.0.0.1",
+        port: u16(3306),
+        user: "root",
+        password: "testpass",
+        database: "testdb"
+    }
+}
+
+pub fn Config.new(host string, port u16, user string, password string, database string) Config {
+    return Config{
+        host: host,
+        port: port,
+        user: user,
+        password: password,
+        database: database
+    }
+}
+
+pub struct Error {
+    pub message string
+    pub code    u32
+}
+
+pub fn Error.new(msg string) Error {
+    return Error{ message: msg, code: u32(0) }
+}
+
+pub fn Error.with_code(code u32, msg string) Error {
+    return Error{ message: msg, code: code }
+}
+
+pub struct Row {
+    pub values Vec<string>
+}
+
+pub fn Row.get(&self, col usize) Option<string> {
+    if col >= self.values.len() {
+        return None
+    }
+    return Some(self.values.get(col).clone())
+}
+
+pub fn Row.get_or(&self, col usize, default string) string {
+    match self.get(col) {
+        Some(val) => return val
+        None => return default
+    }
+}
+
+pub fn Row.len(&self) usize {
+    return self.values.len()
+}
+
+pub struct QueryResult {
+    pub columns        Vec<string>
+    pub rows           Vec<Row>
+    pub affected_rows  u64
+    pub last_insert_id u64
+    pub status_message string
+}
+
+fn rol(val u32, shift u32) u32 {
+    return (val << shift) | (val >> (u32(32) - shift))
+}
+
+fn add5(a u32, b u32, c u32, d u32, e u32) u32 {
+    return a.wrapping_add(b).wrapping_add(c).wrapping_add(d).wrapping_add(e)
+}
+
+fn sha1(data &[]u8) Vec<u8> {
+    var h0: u32 = 1732584193
+    var h1: u32 = 4023233417
+    var h2: u32 = 2562383102
+    var h3: u32 = 271733878
+    var h4: u32 = 3285377520
+
+    var bytes: Vec<u8> = Vec.new()
+    for b in data {
+        bytes.push(b)
+    }
+    orig_bit_len := u64(data.len()) * u64(8)
+    bytes.push(u8(128))
+    for (bytes.len() % usize(64)) != usize(56) {
+        bytes.push(u8(0))
+    }
+
+    bytes.push(u8((orig_bit_len >> 56) & u64(255)))
+    bytes.push(u8((orig_bit_len >> 48) & u64(255)))
+    bytes.push(u8((orig_bit_len >> 40) & u64(255)))
+    bytes.push(u8((orig_bit_len >> 32) & u64(255)))
+    bytes.push(u8((orig_bit_len >> 24) & u64(255)))
+    bytes.push(u8((orig_bit_len >> 16) & u64(255)))
+    bytes.push(u8((orig_bit_len >> 8) & u64(255)))
+    bytes.push(u8(orig_bit_len & u64(255)))
+
+    num_blocks := bytes.len() / usize(64)
+    var block_idx = usize(0)
+    for block_idx < num_blocks {
+        offset := block_idx * usize(64)
+        var w: Vec<u32> = Vec.new()
+        b_slice := bytes.as_slice()
+        var t = usize(0)
+        for t < usize(16) {
+            b_offset := offset + (t * usize(4))
+            word := (u32(b_slice[b_offset]) << 24) | (u32(b_slice[b_offset + usize(1)]) << 16) | (u32(b_slice[b_offset + usize(2)]) << 8) | u32(b_slice[b_offset + usize(3)])
+            w.push(word)
+            t = t + usize(1)
+        }
+        for t < usize(80) {
+            w_slice := w.as_slice()
+            w.push(rol(w_slice[t - usize(3)] ^ w_slice[t - usize(8)] ^ w_slice[t - usize(14)] ^ w_slice[t - usize(16)], u32(1)))
+            t = t + usize(1)
+        }
+        var a = h0
+        var b = h1
+        var c = h2
+        var d = h3
+        var e = h4
+        w_words := w.as_slice()
+        var i = usize(0)
+        for i < usize(80) {
+            var f: u32 = 0
+            var k: u32 = 0
+            if i < usize(20) {
+                f = d ^ (b & (c ^ d))
+                k = 1518500249
+            } else if i < usize(40) {
+                f = b ^ c ^ d
+                k = 1859775393
+            } else if i < usize(60) {
+                f = (b & c) | (b & d) | (c & d)
+                k = 2400959708
+            } else {
+                f = b ^ c ^ d
+                k = 3395469782
+            }
+            temp := add5(rol(a, u32(5)), f, e, k, w_words[i])
+            e = d
+            d = c
+            c = rol(b, u32(30))
+            b = a
+            a = temp
+            i = i + usize(1)
+        }
+        h0 = h0.wrapping_add(a)
+        h1 = h1.wrapping_add(b)
+        h2 = h2.wrapping_add(c)
+        h3 = h3.wrapping_add(d)
+        h4 = h4.wrapping_add(e)
+        block_idx = block_idx + usize(1)
+    }
+    var result: Vec<u8> = Vec.new()
+    words := [5]u32{h0, h1, h2, h3, h4}
+    for word_val in words {
+        result.push(u8((word_val >> 24) & u32(255)))
+        result.push(u8((word_val >> 16) & u32(255)))
+        result.push(u8((word_val >> 8) & u32(255)))
+        result.push(u8(word_val & u32(255)))
+    }
+    return result
+}
+
+fn scramble(password &string, salt &[]u8) Vec<u8> {
+    if password.len() == usize(0) {
+        return Vec.new()
+    }
+    stage1 := sha1(password.bytes())
+    stage2 := sha1(stage1.as_slice())
+    var combined: Vec<u8> = Vec.new()
+    for s in salt {
+        combined.push(s)
+    }
+    for s2 in stage2.as_slice() {
+        combined.push(s2)
+    }
+    stage3 := sha1(combined.as_slice())
+    var token: Vec<u8> = Vec.new()
+    var i = usize(0)
+    s1_slice := stage1.as_slice()
+    s3_slice := stage3.as_slice()
+    for i < usize(20) {
+        token.push(s1_slice[i] ^ s3_slice[i])
+        i = i + usize(1)
+    }
+    return token
+}
+
+fn read_exact(stream &mut net.TcpStream, count usize) Result<Vec<u8>, Error> {
+    var out: Vec<u8> = Vec.new()
+    var buf = [512]u8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+    for out.len() < count {
+        remaining := count - out.len()
+        var chunk = usize(512)
+        if remaining < chunk {
+            chunk = remaining
+        }
+        var slice = &mut buf[0..chunk]
+        match stream.read(slice) {
+            Ok(n) => {
+                if n == usize(0) {
+                    return Err(Error.new("Connection closed unexpectedly"))
+                }
+                var i = usize(0)
+                for i < n {
+                    out.push(buf[i])
+                    i = i + usize(1)
+                }
+            }
+            Err(_) => {
+                return Err(Error.new("Failed to read from TCP stream"))
+            }
+        }
+    }
+    return Ok(out)
+}
+
+fn read_packet(stream &mut net.TcpStream) Result<Vec<u8>, Error> {
+    header := try read_exact(stream, usize(4))
+    h_slice := header.as_slice()
+    payload_len := usize(u32(h_slice[0]) | (u32(h_slice[1]) << 8) | (u32(h_slice[2]) << 16))
+    if payload_len == usize(0) {
+        return Ok(Vec.new())
+    }
+    return read_exact(stream, payload_len)
+}
+
+fn write_packet(stream &mut net.TcpStream, seq u8, payload &[]u8) Result<void, Error> {
+    var packet: Vec<u8> = Vec.new()
+    p_len := payload.len()
+    packet.push(u8(p_len & 255))
+    packet.push(u8((p_len >> 8) & 255))
+    packet.push(u8((p_len >> 16) & 255))
+    packet.push(seq)
+    packet.extend_from_slice(payload)
+    match stream.write_all(packet.as_slice()) {
+        Ok(_) => { return Ok(()) }
+        Err(_) => { return Err(Error.new("Failed to write to MySQL socket")) }
+    }
+}
+
+fn read_lenenc_int(data &[]u8, pos &mut usize) u64 {
+    val := data[*pos]
+    *pos = *pos + usize(1)
+    if val < u8(251) {
+        return u64(val)
+    }
+    if val == u8(252) {
+        res := u64(data[*pos]) | (u64(data[*pos + usize(1)]) << 8)
+        *pos = *pos + usize(2)
+        return res
+    }
+    if val == u8(253) {
+        res := u64(data[*pos]) | (u64(data[*pos + usize(1)]) << 8) | (u64(data[*pos + usize(2)]) << 16)
+        *pos = *pos + usize(3)
+        return res
+    }
+    if val == u8(254) {
+        res := u64(data[*pos]) | (u64(data[*pos + usize(1)]) << 8) | (u64(data[*pos + usize(2)]) << 16) | (u64(data[*pos + usize(3)]) << 24)
+        *pos = *pos + usize(8)
+        return res
+    }
+    return u64(0)
+}
+
+fn read_lenenc_str(data &[]u8, pos &mut usize) Option<string> {
+    if *pos >= data.len() {
+        return None
+    }
+    first := data[*pos]
+    if first == u8(251) {
+        *pos = *pos + usize(1)
+        return None
+    }
+    len := usize(read_lenenc_int(data, pos))
+    start := *pos
+    end := start + len
+    if end > data.len() {
+        return None
+    }
+    *pos = end
+    slice := &data[start..end]
+    match string.from_utf8(slice) {
+        Some(s) => { return Some(s) }
+        None => { return Some("") }
+    }
+}
+
+pub struct Client {
+    pub stream         net.TcpStream
+    pub server_version string
+}
+
+pub fn Client.connect(cfg Config) Result<Client, Error> {
+    addr := cfg.host + ":" + string.from_u64(u64(cfg.port))
+    var s: net.TcpStream
+    match net.TcpStream.connect(&addr) {
+        Ok(stream) => { s = stream }
+        Err(_) => {
+            return Err(Error.new("Failed to connect to MySQL host at " + addr))
+        }
+    }
+
+    // 1. Read Initial Handshake Packet
+    handshake := try read_packet(&mut s)
+    h_data := handshake.as_slice()
+    if h_data.len() < usize(30) || h_data[0] != u8(10) {
+        return Err(Error.new("Unsupported MySQL protocol version"))
+    }
+
+    var pos = usize(1)
+    for pos < h_data.len() && h_data[pos] != u8(0) {
+        pos = pos + usize(1)
+    }
+    server_ver := string.from_utf8(&h_data[1..pos]).unwrap_or("MySQL")
+    pos = pos + usize(1) // skip NUL
+    pos = pos + usize(4) // skip thread id
+
+    // Salt part 1: 8 bytes
+    var salt: Vec<u8> = Vec.new()
+    var i = usize(0)
+    for i < usize(8) {
+        salt.push(h_data[pos + i])
+        i = i + usize(1)
+    }
+    pos = pos + usize(27)
+
+    // Salt part 2: 12 bytes
+    i = usize(0)
+    for i < usize(12) {
+        if (pos + i) < h_data.len() {
+            salt.push(h_data[pos + i])
+        }
+        i = i + usize(1)
+    }
+
+    // 2. Build HandshakeResponse41
+    token := scramble(&cfg.password, salt.as_slice())
+    var payload: Vec<u8> = Vec.new()
+
+    // Capabilities: CLIENT_PROTOCOL_41 | CLIENT_SECURE_CONNECTION | CLIENT_LONG_PASSWORD | CLIENT_LONG_FLAG | CLIENT_CONNECT_WITH_DB | CLIENT_PLUGIN_AUTH
+    payload.push(u8(13))  // 0x0d
+    payload.push(u8(130)) // 0x82
+    payload.push(u8(8))   // 0x08
+    payload.push(u8(0))
+
+    // Max packet size: 16MB
+    payload.push(u8(0))
+    payload.push(u8(0))
+    payload.push(u8(0))
+    payload.push(u8(1))
+
+    // Charset: 33 (utf8_general_ci)
+    payload.push(u8(33))
+
+    // 23 bytes reserved
+    var r = usize(0)
+    for r < usize(23) {
+        payload.push(u8(0))
+        r = r + usize(1)
+    }
+
+    // Username (NUL-terminated)
+    for u in cfg.user.bytes() {
+        payload.push(u)
+    }
+    payload.push(u8(0))
+
+    // Auth response token
+    if token.len() > usize(0) {
+        payload.push(u8(token.len()))
+        payload.extend_from_slice(token.as_slice())
+    } else {
+        payload.push(u8(0))
+    }
+
+    // Database name (NUL-terminated)
+    for d in cfg.database.bytes() {
+        payload.push(d)
+    }
+    payload.push(u8(0))
+
+    // Plugin name: "mysql_native_password\0"
+    plugin_name := "mysql_native_password"
+    for p in plugin_name.bytes() {
+        payload.push(p)
+    }
+    payload.push(u8(0))
+
+    // Send HandshakeResponse41 (sequence id = 1)
+    try write_packet(&mut s, u8(1), payload.as_slice())
+
+    // 3. Read Authentication Result Packet
+    auth_resp := try read_packet(&mut s)
+    if auth_resp.len() == usize(0) {
+        return Err(Error.new("Empty authentication response from MySQL"))
+    }
+    resp_slice := auth_resp.as_slice()
+    header_type := resp_slice[0]
+
+    if header_type == u8(255) {
+        // ERR Packet
+        var err_code = u32(0)
+        var err_msg = "Authentication failed"
+        if resp_slice.len() >= usize(3) {
+            err_code = u32(resp_slice[1]) | (u32(resp_slice[2]) << 8)
+        }
+        if resp_slice.len() > usize(9) {
+            err_msg = string.from_utf8(&resp_slice[9..resp_slice.len()]).unwrap_or("Authentication failed")
+        }
+        return Err(Error.with_code(err_code, err_msg))
+    }
+
+    if header_type != u8(0) {
+        return Err(Error.new("Unexpected authentication status: " + string.from_u64(u64(header_type))))
+    }
+
+    return Ok(Client{
+        stream: s,
+        server_version: server_ver
+    })
+}
+
+pub fn Client.execute(&mut self, sql &string) Result<string, Error> {
+    var q_payload: Vec<u8> = Vec.new()
+    q_payload.push(u8(3))
+    for b in sql.bytes() {
+        q_payload.push(b)
+    }
+    try write_packet(&mut self.stream, u8(0), q_payload.as_slice())
+
+    resp := try read_packet(&mut self.stream)
+    if resp.len() == usize(0) {
+        return Err(Error.new("Empty response from MySQL server"))
+    }
+    r_slice := resp.as_slice()
+    header_type := r_slice[0]
+
+    if header_type == u8(255) {
+        var err_code = u32(0)
+        var err_msg = "Query execution error"
+        if r_slice.len() >= usize(3) {
+            err_code = u32(r_slice[1]) | (u32(r_slice[2]) << 8)
+        }
+        if r_slice.len() > usize(9) {
+            err_msg = string.from_utf8(&r_slice[9..r_slice.len()]).unwrap_or("Query execution error")
+        }
+        return Err(Error.with_code(err_code, err_msg))
+    }
+
+    if header_type == u8(0) {
+        var pos = usize(1)
+        affected := read_lenenc_int(r_slice, &mut pos)
+        return Ok("OK (affected rows: " + string.from_u64(affected) + ")")
+    }
+
+    return Ok("OK")
+}
+
+pub fn Client.query(&mut self, sql &string) Result<QueryResult, Error> {
+    var q_payload: Vec<u8> = Vec.new()
+    q_payload.push(u8(3))
+    for b in sql.bytes() {
+        q_payload.push(b)
+    }
+    try write_packet(&mut self.stream, u8(0), q_payload.as_slice())
+
+    first_pkt := try read_packet(&mut self.stream)
+    if first_pkt.len() == usize(0) {
+        return Err(Error.new("Empty query response"))
+    }
+    f_slice := first_pkt.as_slice()
+    first_byte := f_slice[0]
+
+    if first_byte == u8(255) {
+        var err_code = u32(0)
+        var err_msg = "Query failed"
+        if f_slice.len() >= usize(3) {
+            err_code = u32(f_slice[1]) | (u32(f_slice[2]) << 8)
+        }
+        if f_slice.len() > usize(9) {
+            err_msg = string.from_utf8(&f_slice[9..f_slice.len()]).unwrap_or("Query failed")
+        }
+        return Err(Error.with_code(err_code, err_msg))
+    }
+
+    if first_byte == u8(0) {
+        var pos = usize(1)
+        aff := read_lenenc_int(f_slice, &mut pos)
+        ins := read_lenenc_int(f_slice, &mut pos)
+        return Ok(QueryResult{
+            columns: Vec.new(),
+            rows: Vec.new(),
+            affected_rows: aff,
+            last_insert_id: ins,
+            status_message: "OK"
+        })
+    }
+
+    var c_pos = usize(0)
+    col_count := usize(read_lenenc_int(f_slice, &mut c_pos))
+
+    var cols: Vec<string> = Vec.new()
+    var col_idx = usize(0)
+    for col_idx < col_count {
+        col_pkt := try read_packet(&mut self.stream)
+        cp_slice := col_pkt.as_slice()
+        var pos = usize(0)
+        _catalog := read_lenenc_str(cp_slice, &mut pos)
+        _schema := read_lenenc_str(cp_slice, &mut pos)
+        _table := read_lenenc_str(cp_slice, &mut pos)
+        _orig_table := read_lenenc_str(cp_slice, &mut pos)
+        col_name := read_lenenc_str(cp_slice, &mut pos).unwrap_or("col_" + string.from_u64(u64(col_idx)))
+        cols.push(col_name)
+        col_idx = col_idx + usize(1)
+    }
+
+    _col_eof := try read_packet(&mut self.stream)
+
+    var rows: Vec<Row> = Vec.new()
+    for {
+        row_pkt := try read_packet(&mut self.stream)
+        if row_pkt.len() == usize(0) {
+            break
+        }
+        r_slice := row_pkt.as_slice()
+        if r_slice[0] == u8(254) && r_slice.len() < usize(9) {
+            break
+        }
+        if r_slice[0] == u8(255) {
+            return Err(Error.new("Error reading row data"))
+        }
+
+        var r_pos = usize(0)
+        var row_vals: Vec<string> = Vec.new()
+        var f_idx = usize(0)
+        for f_idx < col_count {
+            val := read_lenenc_str(r_slice, &mut r_pos).unwrap_or("NULL")
+            row_vals.push(val)
+            f_idx = f_idx + usize(1)
+        }
+        rows.push(Row{ values: row_vals })
+    }
+
+    return Ok(QueryResult{
+        columns: cols,
+        rows: rows,
+        affected_rows: u64(0),
+        last_insert_id: u64(0),
+        status_message: "OK"
+    })
+}
+
+pub fn Client.close(&mut self) Result<void, Error> {
+    var quit: Vec<u8> = Vec.new()
+    quit.push(u8(1))
+    _ := write_packet(&mut self.stream, u8(0), quit.as_slice())
+    return Ok(())
+}
