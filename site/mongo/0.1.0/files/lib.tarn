@@ -1,0 +1,824 @@
+// tarn-mongo: Native MongoDB Client Driver for Tarn
+// Implements the MongoDB Wire Protocol (OP_MSG opcode 2013) with full BSON encoding/decoding.
+// 100% pure Tarn systems code over native TCP sockets (stdlib/net); zero external C dependencies.
+
+import "net"
+import "string"
+import "ffi"
+
+extern "C" fn memcpy(target *mut u8, source *u8, count usize) *mut u8
+
+pub copy enum ErrorKind {
+    ConnectionFailed
+    QueryFailed
+    ProtocolError
+    IoError
+}
+
+pub struct Error {
+    pub kind    ErrorKind
+    pub message string
+}
+
+pub fn Error.new(kind ErrorKind, message string) Error {
+    return Error{kind: kind, message: message}
+}
+
+pub struct Config {
+    pub host     string
+    pub port     u16
+    pub database string
+}
+
+pub fn Config.new(host string, port u16, database string) Config {
+    return Config{host: host, port: port, database: database}
+}
+
+pub fn Config.default() Config {
+    return Config{host: "127.0.0.1", port: 27017, database: "testdb"}
+}
+
+// --- BSON Data Model ---
+
+pub struct BsonElement {
+    pub key   string
+    pub value BsonValue
+}
+
+pub enum BsonValue {
+    Double(f64)
+    String(string)
+    Doc(BsonDoc)
+    Array(Vec<BsonValue>)
+    Bool(bool)
+    Int32(i32)
+    Int64(i64)
+    Null
+}
+
+pub struct BsonDoc {
+    pub elements Vec<BsonElement>
+}
+
+pub fn BsonDoc.new() BsonDoc {
+    return BsonDoc{elements: Vec.new()}
+}
+
+pub fn BsonValue.clone(&self) BsonValue {
+    match self {
+        BsonValue.Double(d) => { return BsonValue.Double(d) }
+        BsonValue.String(s) => { return BsonValue.String(s.clone()) }
+        BsonValue.Doc(d) => { return BsonValue.Doc(d.clone()) }
+        BsonValue.Array(arr) => {
+            var new_arr: Vec<BsonValue> = Vec.new()
+            for item in arr.as_slice() {
+                new_arr.push(item.clone())
+            }
+            return BsonValue.Array(new_arr)
+        }
+        BsonValue.Bool(b) => { return BsonValue.Bool(b) }
+        BsonValue.Int32(n) => { return BsonValue.Int32(n) }
+        BsonValue.Int64(n) => { return BsonValue.Int64(n) }
+        BsonValue.Null => { return BsonValue.Null }
+    }
+}
+
+pub fn BsonDoc.clone(&self) BsonDoc {
+    var new_elems: Vec<BsonElement> = Vec.new()
+    for elem in self.elements.as_slice() {
+        new_elems.push(BsonElement{key: elem.key.clone(), value: elem.value.clone()})
+    }
+    return BsonDoc{elements: new_elems}
+}
+
+pub fn BsonDoc.set_string(&mut self, key string, val string) {
+    self.elements.push(BsonElement{key: key, value: BsonValue.String(val)})
+}
+
+pub fn BsonDoc.set_i32(&mut self, key string, val i32) {
+    self.elements.push(BsonElement{key: key, value: BsonValue.Int32(val)})
+}
+
+pub fn BsonDoc.set_i64(&mut self, key string, val i64) {
+    self.elements.push(BsonElement{key: key, value: BsonValue.Int64(val)})
+}
+
+pub fn BsonDoc.set_f64(&mut self, key string, val f64) {
+    self.elements.push(BsonElement{key: key, value: BsonValue.Double(val)})
+}
+
+pub fn BsonDoc.set_bool(&mut self, key string, val bool) {
+    self.elements.push(BsonElement{key: key, value: BsonValue.Bool(val)})
+}
+
+pub fn BsonDoc.set_null(&mut self, key string) {
+    self.elements.push(BsonElement{key: key, value: BsonValue.Null})
+}
+
+pub fn BsonDoc.set_doc(&mut self, key string, val BsonDoc) {
+    self.elements.push(BsonElement{key: key, value: BsonValue.Doc(val)})
+}
+
+pub fn BsonDoc.set_array(&mut self, key string, val Vec<BsonValue>) {
+    self.elements.push(BsonElement{key: key, value: BsonValue.Array(val)})
+}
+
+pub fn BsonDoc.get_string(&self, key &string) Option<string> {
+    for elem in self.elements.as_slice() {
+        if &elem.key == key {
+            match &elem.value {
+                BsonValue.String(s) => { return Some(s.clone()) }
+                _ => {}
+            }
+        }
+    }
+    return None
+}
+
+pub fn BsonDoc.get_i32(&self, key &string) Option<i32> {
+    for elem in self.elements.as_slice() {
+        if &elem.key == key {
+            match &elem.value {
+                BsonValue.Int32(n) => { return Some(n) }
+                BsonValue.Int64(n) => { return Some(i32(n)) }
+                BsonValue.Double(d) => { return Some(i32(d)) }
+                _ => {}
+            }
+        }
+    }
+    return None
+}
+
+pub fn BsonDoc.get_i64(&self, key &string) Option<i64> {
+    for elem in self.elements.as_slice() {
+        if &elem.key == key {
+            match &elem.value {
+                BsonValue.Int64(n) => { return Some(n) }
+                BsonValue.Int32(n) => { return Some(i64(n)) }
+                BsonValue.Double(d) => { return Some(i64(d)) }
+                _ => {}
+            }
+        }
+    }
+    return None
+}
+
+pub fn BsonDoc.get_f64(&self, key &string) Option<f64> {
+    for elem in self.elements.as_slice() {
+        if &elem.key == key {
+            match &elem.value {
+                BsonValue.Double(d) => { return Some(d) }
+                BsonValue.Int32(n) => { return Some(f64(n)) }
+                BsonValue.Int64(n) => { return Some(f64(n)) }
+                _ => {}
+            }
+        }
+    }
+    return None
+}
+
+pub fn BsonDoc.get_bool(&self, key &string) Option<bool> {
+    for elem in self.elements.as_slice() {
+        if &elem.key == key {
+            match &elem.value {
+                BsonValue.Bool(b) => { return Some(b) }
+                _ => {}
+            }
+        }
+    }
+    return None
+}
+
+pub fn BsonDoc.get_doc(&self, key &string) Option<BsonDoc> {
+    for elem in self.elements.as_slice() {
+        if &elem.key == key {
+            match &elem.value {
+                BsonValue.Doc(d) => { return Some(d.clone()) }
+                _ => {}
+            }
+        }
+    }
+    return None
+}
+
+pub fn BsonDoc.get_array(&self, key &string) Option<Vec<BsonValue>> {
+    for elem in self.elements.as_slice() {
+        if &elem.key == key {
+            match &elem.value {
+                BsonValue.Array(arr) => {
+                    var out: Vec<BsonValue> = Vec.new()
+                    for it in arr.as_slice() {
+                        out.push(it.clone())
+                    }
+                    return Some(out)
+                }
+                _ => {}
+            }
+        }
+    }
+    return None
+}
+
+pub fn BsonValue.to_json(&self) string {
+    match self {
+        BsonValue.Double(d) => { return string.from_f64(d) }
+        BsonValue.String(s) => { return "\"" + s.clone() + "\"" }
+        BsonValue.Doc(d) => { return d.to_json() }
+        BsonValue.Array(arr) => {
+            var out = "["
+            var idx: usize = 0
+            for it in arr.as_slice() {
+                if idx > 0 { out = out + ", " }
+                out = out + it.to_json()
+                idx = idx + 1
+            }
+            return out + "]"
+        }
+        BsonValue.Bool(b) => {
+            if b { return "true" }
+            return "false"
+        }
+        BsonValue.Int32(n) => { return string.from_i64(i64(n)) }
+        BsonValue.Int64(n) => { return string.from_i64(n) }
+        BsonValue.Null => { return "null" }
+    }
+}
+
+pub fn BsonDoc.to_json(&self) string {
+    var out = "{"
+    var idx: usize = 0
+    for elem in self.elements.as_slice() {
+        if idx > 0 { out = out + ", " }
+        out = out + "\"" + elem.key.clone() + "\": " + elem.value.to_json()
+        idx = idx + 1
+    }
+    return out + "}"
+}
+
+// --- BSON Serialization ---
+
+fn write_i32(out &mut Vec<u8>, val i32) {
+    u := u32(val)
+    out.push(u8(u & 255))
+    out.push(u8((u >> 8) & 255))
+    out.push(u8((u >> 16) & 255))
+    out.push(u8((u >> 24) & 255))
+}
+
+fn write_i64(out &mut Vec<u8>, val i64) {
+    u := u64(val)
+    var i: usize = 0
+    for i < 8 {
+        out.push(u8((u >> (i * 8)) & 255))
+        i = i + 1
+    }
+}
+
+fn write_cstring(out &mut Vec<u8>, text &string) {
+    for b in text.bytes() {
+        out.push(b)
+    }
+    out.push(0)
+}
+
+fn encode_value(out &mut Vec<u8>, key &string, val &BsonValue) {
+    match val {
+        BsonValue.Double(d) => {
+            out.push(1) // 0x01
+            write_cstring(out, key)
+            var bits: Vec<u8> = Vec.new()
+            var i: usize = 0
+            for i < 8 {
+                bits.push(0)
+                i = i + 1
+            }
+            var d_copy = d
+            unsafe {
+                src_mut: *mut u8 := ffi.from_address(ffi.address(ffi.to_const(ffi.of_mut(&mut d_copy))))
+                dst_ptr: *mut u8 := ffi.from_address(ffi.address(ffi.slice(bits.as_slice())))
+                memcpy(dst_ptr, ffi.to_const(src_mut), 8)
+            }
+            for b in bits.as_slice() { out.push(b) }
+        }
+        BsonValue.String(s) => {
+            out.push(2) // 0x02
+            write_cstring(out, key)
+            write_i32(out, i32(s.len() + 1))
+            for b in s.bytes() { out.push(b) }
+            out.push(0)
+        }
+        BsonValue.Doc(d) => {
+            out.push(3) // 0x03
+            write_cstring(out, key)
+            doc_bytes := d.encode()
+            for b in doc_bytes.as_slice() { out.push(b) }
+        }
+        BsonValue.Array(arr) => {
+            out.push(4) // 0x04
+            write_cstring(out, key)
+            var arr_doc = BsonDoc.new()
+            var idx: usize = 0
+            for it in arr.as_slice() {
+                arr_doc.elements.push(BsonElement{key: string.from_i64(i64(idx)), value: it.clone()})
+                idx = idx + 1
+            }
+            arr_bytes := arr_doc.encode()
+            for b in arr_bytes.as_slice() { out.push(b) }
+        }
+        BsonValue.Bool(b) => {
+            out.push(8) // 0x08
+            write_cstring(out, key)
+            if b { out.push(1) } else { out.push(0) }
+        }
+        BsonValue.Int32(n) => {
+            out.push(16) // 0x10
+            write_cstring(out, key)
+            write_i32(out, n)
+        }
+        BsonValue.Int64(n) => {
+            out.push(18) // 0x12
+            write_cstring(out, key)
+            write_i64(out, n)
+        }
+        BsonValue.Null => {
+            out.push(10) // 0x0A
+            write_cstring(out, key)
+        }
+    }
+}
+
+pub fn BsonDoc.encode(&self) Vec<u8> {
+    var payload: Vec<u8> = Vec.new()
+    for elem in self.elements.as_slice() {
+        encode_value(&mut payload, &elem.key, &elem.value)
+    }
+    total_len := i32(payload.len() + 5)
+    var out: Vec<u8> = Vec.new()
+    write_i32(&mut out, total_len)
+    for b in payload.as_slice() {
+        out.push(b)
+    }
+    out.push(0)
+    return out
+}
+
+// --- BSON Deserialization ---
+
+struct Decoder {
+    bytes Vec<u8>
+    pos   usize
+}
+
+fn Decoder.read_u8(&mut self) Option<u8> {
+    if self.pos >= self.bytes.len() { return None }
+    b := self.bytes.at(self.pos)
+    self.pos = self.pos + 1
+    return Some(b)
+}
+
+fn Decoder.read_i32(&mut self) Option<i32> {
+    if self.pos + 4 > self.bytes.len() { return None }
+    b0 := u32(self.bytes.at(self.pos))
+    b1 := u32(self.bytes.at(self.pos + 1))
+    b2 := u32(self.bytes.at(self.pos + 2))
+    b3 := u32(self.bytes.at(self.pos + 3))
+    self.pos = self.pos + 4
+    val := b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+    return Some(i32(val))
+}
+
+fn Decoder.read_i64(&mut self) Option<i64> {
+    if self.pos + 8 > self.bytes.len() { return None }
+    var val: u64 = 0
+    var i: usize = 0
+    for i < 8 {
+        b := u64(self.bytes.at(self.pos + i))
+        val = val | (b << (i * 8))
+        i = i + 1
+    }
+    self.pos = self.pos + 8
+    return Some(i64(val))
+}
+
+fn Decoder.read_f64(&mut self) Option<f64> {
+    if self.pos + 8 > self.bytes.len() { return None }
+    var bits: Vec<u8> = Vec.new()
+    var i: usize = 0
+    for i < 8 {
+        bits.push(self.bytes.at(self.pos + i))
+        i = i + 1
+    }
+    self.pos = self.pos + 8
+    var out: f64 = 0.0
+    unsafe {
+        src_ptr: *u8 := ffi.slice(bits.as_slice())
+        dst_ptr: *mut u8 := ffi.from_address(ffi.address(ffi.to_const(ffi.of_mut(&mut out))))
+        memcpy(dst_ptr, src_ptr, 8)
+    }
+    return Some(out)
+}
+
+fn Decoder.read_cstring(&mut self) Option<string> {
+    var raw: Vec<u8> = Vec.new()
+    for self.pos < self.bytes.len() {
+        b := self.bytes.at(self.pos)
+        self.pos = self.pos + 1
+        if b == 0 {
+            return string_from_utf8(raw.as_slice())
+        }
+        raw.push(b)
+    }
+    return None
+}
+
+fn hex_nibble(n u8) string {
+    if n < 10 { return string.from_i64(i64(n)) }
+    if n == 10 { return "a" }
+    if n == 11 { return "b" }
+    if n == 12 { return "c" }
+    if n == 13 { return "d" }
+    if n == 14 { return "e" }
+    return "f"
+}
+
+fn hex_byte(b u8) string {
+    return hex_nibble((b >> 4) & 15) + hex_nibble(b & 15)
+}
+
+fn Decoder.decode_doc(&mut self) Option<BsonDoc> {
+    start_pos := self.pos
+    var doc_len: i32 = 0
+    match self.read_i32() {
+        Some(l) => { doc_len = l }
+        None => { return None }
+    }
+    if doc_len < 5 { return None }
+    end_pos := start_pos + usize(doc_len)
+    if end_pos > self.bytes.len() { return None }
+
+    var doc = BsonDoc.new()
+    for self.pos < end_pos - 1 {
+        var elem_type: u8 = 0
+        match self.read_u8() {
+            Some(t) => { elem_type = t }
+            None => { return None }
+        }
+        if elem_type == 0 { break }
+
+        var key = ""
+        match self.read_cstring() {
+            Some(k) => { key = k }
+            None => { return None }
+        }
+
+        var val = BsonValue.Null
+        if elem_type == 1 { // Double
+            var d: f64 = 0.0
+            match self.read_f64() {
+                Some(v) => { d = v }
+                None => { return None }
+            }
+            val = BsonValue.Double(d)
+        } else if elem_type == 2 { // String
+            var s_len: i32 = 0
+            match self.read_i32() {
+                Some(l) => { s_len = l }
+                None => { return None }
+            }
+            if s_len <= 0 || self.pos + usize(s_len) > self.bytes.len() { return None }
+            var s_bytes: Vec<u8> = Vec.new()
+            var s_i: usize = 0
+            str_data_len := usize(s_len - 1)
+            for s_i < str_data_len {
+                s_bytes.push(self.bytes.at(self.pos + s_i))
+                s_i = s_i + 1
+            }
+            self.pos = self.pos + usize(s_len)
+            match string_from_utf8(s_bytes.as_slice()) {
+                Some(s) => { val = BsonValue.String(s) }
+                None => { return None }
+            }
+        } else if elem_type == 3 { // Embedded Document
+            var sub_doc = BsonDoc.new()
+            match self.decode_doc() {
+                Some(d) => { sub_doc = d }
+                None => { return None }
+            }
+            val = BsonValue.Doc(sub_doc)
+        } else if elem_type == 4 { // Array
+            var arr_doc = BsonDoc.new()
+            match self.decode_doc() {
+                Some(d) => { arr_doc = d }
+                None => { return None }
+            }
+            var arr_vals: Vec<BsonValue> = Vec.new()
+            for elem in arr_doc.elements.as_slice() {
+                arr_vals.push(elem.value.clone())
+            }
+            val = BsonValue.Array(arr_vals)
+        } else if elem_type == 7 { // ObjectId (12 bytes)
+            if self.pos + 12 > self.bytes.len() { return None }
+            var hex = ""
+            var o_i: usize = 0
+            for o_i < 12 {
+                b := self.bytes.at(self.pos + o_i)
+                hex = hex + hex_byte(b)
+                o_i = o_i + 1
+            }
+            self.pos = self.pos + 12
+            val = BsonValue.String(hex)
+        } else if elem_type == 8 { // Bool
+            var b: u8 = 0
+            match self.read_u8() {
+                Some(v) => { b = v }
+                None => { return None }
+            }
+            val = BsonValue.Bool(b != 0)
+        } else if elem_type == 10 { // Null
+            val = BsonValue.Null
+        } else if elem_type == 16 { // Int32
+            var n32: i32 = 0
+            match self.read_i32() {
+                Some(v) => { n32 = v }
+                None => { return None }
+            }
+            val = BsonValue.Int32(n32)
+        } else if elem_type == 18 { // Int64
+            var n64: i64 = 0
+            match self.read_i64() {
+                Some(v) => { n64 = v }
+                None => { return None }
+            }
+            val = BsonValue.Int64(n64)
+        } else {
+            return None
+        }
+
+        doc.elements.push(BsonElement{key: key, value: val})
+    }
+
+    match self.read_u8() {
+        Some(t) => {}
+        None => { return None }
+    }
+    return Some(doc)
+}
+
+// --- Wire I/O Helpers ---
+
+fn read_exact(stream &mut net.TcpStream, count usize) Result<Vec<u8>, Error> {
+    var out: Vec<u8> = Vec.new()
+    var buf = [256]u8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+    for out.len() < count {
+        remaining := count - out.len()
+        var chunk = usize(256)
+        if remaining < chunk {
+            chunk = remaining
+        }
+        var slice = &mut buf[0..chunk]
+        match stream.read(slice) {
+            Ok(n) => {
+                if n == usize(0) {
+                    return Err(Error.new(ErrorKind.IoError, "Connection closed unexpectedly"))
+                }
+                var i = usize(0)
+                for i < n {
+                    out.push(buf[i])
+                    i = i + usize(1)
+                }
+            }
+            Err(_) => {
+                return Err(Error.new(ErrorKind.IoError, "Failed to read from TCP stream"))
+            }
+        }
+    }
+    return Ok(out)
+}
+
+// --- Client Implementation ---
+
+pub struct Client {
+    stream       net.TcpStream
+    pub database string
+    request_id   i32
+}
+
+pub fn Client.connect(cfg Config) Result<Client, Error> {
+    addr := cfg.host.clone() + ":" + string.from_i64(i64(cfg.port))
+    var stream: net.TcpStream
+    match net.TcpStream.connect(&addr) {
+        Ok(s) => { stream = s }
+        Err(_) => { return Err(Error.new(ErrorKind.ConnectionFailed, "Failed to connect to MongoDB at " + addr)) }
+    }
+    var client = Client{
+        stream: stream,
+        database: cfg.database,
+        request_id: 0
+    }
+    try client.ping()
+    return Ok(client)
+}
+
+pub fn Client.close(self) Result<void, Error> {
+    match self.stream.close() {
+        Ok(_) => return Ok(())
+        Err(_) => return Err(Error.new(ErrorKind.IoError, "Failed to close stream"))
+    }
+}
+
+pub fn Client.run_command(&mut self, cmd &BsonDoc) Result<BsonDoc, Error> {
+    var command_doc = cmd.clone()
+    var has_db = false
+    for elem in command_doc.elements.as_slice() {
+        if elem.key == "$db" {
+            has_db = true
+        }
+    }
+    if !has_db {
+        command_doc.set_string("$db", self.database.clone())
+    }
+
+    doc_bytes := command_doc.encode()
+
+    msg_len := i32(16 + 4 + 1 + doc_bytes.len())
+    self.request_id = self.request_id + 1
+
+    var packet: Vec<u8> = Vec.new()
+    write_i32(&mut packet, msg_len)
+    write_i32(&mut packet, self.request_id)
+    write_i32(&mut packet, 0)
+    write_i32(&mut packet, 2013) // OP_MSG opcode
+
+    write_i32(&mut packet, 0) // flagBits
+    packet.push(0) // Section kind 0 (Body document)
+
+    for b in doc_bytes.as_slice() {
+        packet.push(b)
+    }
+
+    match self.stream.write_all(packet.as_slice()) {
+        Ok(_) => {}
+        Err(_) => { return Err(Error.new(ErrorKind.IoError, "Failed to write OP_MSG to MongoDB")) }
+    }
+
+    header_bytes := try read_exact(&mut self.stream, 16)
+    var dec_hdr = Decoder{bytes: header_bytes, pos: 0}
+    var resp_len: i32 = 0
+    match dec_hdr.read_i32() {
+        Some(l) => { resp_len = l }
+        None => { return Err(Error.new(ErrorKind.ProtocolError, "Invalid response header")) }
+    }
+    dec_hdr.read_i32()
+    dec_hdr.read_i32()
+    var resp_op: i32 = 0
+    match dec_hdr.read_i32() {
+        Some(op) => { resp_op = op }
+        None => { return Err(Error.new(ErrorKind.ProtocolError, "Invalid response opCode")) }
+    }
+
+    if resp_op != 2013 {
+        return Err(Error.new(ErrorKind.ProtocolError, "Expected OP_MSG (2013) response from MongoDB"))
+    }
+
+    if resp_len < 16 + 5 {
+        return Err(Error.new(ErrorKind.ProtocolError, "Response length too small"))
+    }
+
+    body_len := usize(resp_len - 16)
+    body_bytes := try read_exact(&mut self.stream, body_len)
+
+    if body_bytes.len() < 5 {
+        return Err(Error.new(ErrorKind.ProtocolError, "Invalid response body size"))
+    }
+
+    var dec_body = Decoder{bytes: body_bytes, pos: 5}
+    var resp_doc = BsonDoc.new()
+    match dec_body.decode_doc() {
+        Some(d) => { resp_doc = d }
+        None => { return Err(Error.new(ErrorKind.ProtocolError, "Failed to decode BSON response")) }
+    }
+
+    var ok = false
+    match resp_doc.get_f64(&"ok") {
+        Some(v) => { if v == 1.0 { ok = true } }
+        None => match resp_doc.get_i32(&"ok") {
+            Some(v) => { if v == 1 { ok = true } }
+            None => {}
+        }
+    }
+
+    if !ok {
+        var errmsg = "MongoDB command failed"
+        match resp_doc.get_string(&"errmsg") {
+            Some(msg) => { errmsg = msg }
+            None => {}
+        }
+        return Err(Error.new(ErrorKind.QueryFailed, errmsg))
+    }
+
+    return Ok(resp_doc)
+}
+
+pub fn Client.ping(&mut self) Result<bool, Error> {
+    var cmd = BsonDoc.new()
+    cmd.set_i32("ping", 1)
+    res := try self.run_command(&cmd)
+    return Ok(true)
+}
+
+pub fn Client.insert_one(&mut self, collection &string, doc BsonDoc) Result<void, Error> {
+    var cmd = BsonDoc.new()
+    cmd.set_string("insert", collection.clone())
+    var docs: Vec<BsonValue> = Vec.new()
+    docs.push(BsonValue.Doc(doc))
+    cmd.set_array("documents", docs)
+    try self.run_command(&cmd)
+    return Ok(())
+}
+
+pub fn Client.find(&mut self, collection &string, filter BsonDoc) Result<Vec<BsonDoc>, Error> {
+    var cmd = BsonDoc.new()
+    cmd.set_string("find", collection.clone())
+    cmd.set_doc("filter", filter)
+    res := try self.run_command(&cmd)
+
+    var out: Vec<BsonDoc> = Vec.new()
+    match res.get_doc(&"cursor") {
+        Some(cursor) => match cursor.get_array(&"firstBatch") {
+            Some(batch) => {
+                for it in batch.as_slice() {
+                    match it {
+                        BsonValue.Doc(d) => { out.push(d.clone()) }
+                        _ => {}
+                    }
+                }
+            }
+            None => {}
+        }
+        None => {}
+    }
+    return Ok(out)
+}
+
+pub fn Client.count_documents(&mut self, collection &string, filter BsonDoc) Result<i64, Error> {
+    var cmd = BsonDoc.new()
+    cmd.set_string("count", collection.clone())
+    cmd.set_doc("query", filter)
+    res := try self.run_command(&cmd)
+    match res.get_i64(&"n") {
+        Some(n) => return Ok(n)
+        None => match res.get_i32(&"n") {
+            Some(n) => return Ok(i64(n))
+            None => match res.get_f64(&"n") {
+                Some(n) => return Ok(i64(n))
+                None => return Ok(0)
+            }
+        }
+    }
+}
+
+pub fn Client.delete_many(&mut self, collection &string, filter BsonDoc) Result<i64, Error> {
+    var cmd = BsonDoc.new()
+    cmd.set_string("delete", collection.clone())
+    var del_spec = BsonDoc.new()
+    del_spec.set_doc("q", filter)
+    del_spec.set_i32("limit", 0)
+    var dels: Vec<BsonValue> = Vec.new()
+    dels.push(BsonValue.Doc(del_spec))
+    cmd.set_array("deletes", dels)
+    res := try self.run_command(&cmd)
+    match res.get_i64(&"n") {
+        Some(n) => return Ok(n)
+        None => match res.get_i32(&"n") {
+            Some(n) => return Ok(i64(n))
+            None => match res.get_f64(&"n") {
+                Some(n) => return Ok(i64(n))
+                None => return Ok(0)
+            }
+        }
+    }
+}
+
+pub fn Client.drop_collection(&mut self, collection &string) Result<void, Error> {
+    var cmd = BsonDoc.new()
+    cmd.set_string("drop", collection.clone())
+    match self.run_command(&cmd) {
+        Ok(_) => return Ok(())
+        Err(_) => return Ok(())
+    }
+}

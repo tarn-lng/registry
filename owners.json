@@ -4,6 +4,11 @@
     "repository": "https://github.com/tarn-lng/tarn-dbus",
     "status": "experimental"
   },
+  "mongo": {
+    "maintainers": ["cesardev31"],
+    "repository": "https://github.com/tarn-lng/tarn-mongo",
+    "status": "experimental"
+  },
   "mysql": {
     "maintainers": ["cesardev31"],
     "repository": "https://github.com/tarn-lng/tarn-mysql",
