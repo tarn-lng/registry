@@ -1,0 +1,15 @@
+{
+  "dependencies": {},
+  "entry": "lib.tarn",
+  "files": {
+    "README.md": "baf7674ba900e1939f95b504f712b65e3b914d27fca4120ee95e2b8c248dfe7e",
+    "lib.tarn": "9c017d7f83c2a2c6a823941f1e8361b6438ef61581f0980de0ffc2657295e55c",
+    "main.tarn": "f963b3d3fc3b1a9f712bd0b8197fa985449df3e79a18e8b3f30d740be50ecd8d",
+    "tarn.toml": "c0cc600d1a8b2d07d8455e56f57b88071381a0f26175624495bc0d180af3e1a7"
+  },
+  "hash": "792731ee3e82506e966a3c0c64cabc22b80385137da6ba2f2441d7561f56a59e",
+  "name": "redis",
+  "published": 1791598073,
+  "schema": 1,
+  "version": "0.1.0"
+}

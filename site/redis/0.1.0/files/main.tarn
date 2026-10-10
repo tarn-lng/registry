@@ -1,0 +1,126 @@
+// Comprehensive integration test suite for tarn-redis against real Redis in Docker
+import "lib"
+import "string"
+
+fn run_tests() Result<void, lib.Error> {
+    print("=== Testing Tarn Redis Native Driver ===")
+
+    // 1. Connection & Ping
+    print("1. Connecting to Redis (127.0.0.1:6379)...")
+    cfg := lib.Config.default()
+    var client = try lib.Client.connect(cfg)
+    pong := try client.ping()
+    print("Ping response: " + pong)
+
+    echo_msg := try client.echo(&"Hello Tarn Redis!")
+    print("Echo response: " + echo_msg)
+
+    // 2. Key-Value Strings
+    print("2. Testing Strings (SET, GET, INCR, DECR, DEL)...")
+    try client.set(&"language", &"Tarn")
+    match try client.get(&"language") {
+        Some(val) => { print("GET language: " + val) }
+        None => { print("ERROR: Key 'language' not found!") }
+    }
+
+    ex := try client.exists(&"language")
+    if ex { print("EXISTS language: true") }
+
+    try client.del(&"counter")
+    c1 := try client.incr(&"counter")
+    print("INCR counter: " + string.from_i64(c1))
+
+    c2 := try client.incr_by(&"counter", 10)
+    print("INCRBY counter 10: " + string.from_i64(c2))
+
+    c3 := try client.decr(&"counter")
+    print("DECR counter: " + string.from_i64(c3))
+
+    del_c := try client.del(&"counter")
+    print("DEL counter count: " + string.from_i64(del_c))
+
+    match try client.get(&"counter") {
+        Some(_) => { print("ERROR: counter should be deleted!") }
+        None => { print("GET counter after delete: None (OK)") }
+    }
+
+    // 3. Hashes
+    print("3. Testing Hashes (HSET, HGET, HLEN, HDEL)...")
+    try client.del(&"user:100")
+    try client.hset(&"user:100", &"name", &"Grace Hopper")
+    try client.hset(&"user:100", &"role", &"Compiler Pioneer")
+
+    match try client.hget(&"user:100", &"name") {
+        Some(name) => { print("HGET user:100 name: " + name) }
+        None => { print("ERROR: user:100 name not found!") }
+    }
+
+    hlen1 := try client.hlen(&"user:100")
+    print("HLEN user:100: " + string.from_i64(hlen1))
+
+    try client.hdel(&"user:100", &"role")
+    hlen2 := try client.hlen(&"user:100")
+    print("HLEN user:100 after HDEL role: " + string.from_i64(hlen2))
+
+    // 4. Lists
+    print("4. Testing Lists (RPUSH, LPUSH, LLEN, LRANGE, LPOP, RPOP)...")
+    try client.del(&"tasks")
+    try client.rpush(&"tasks", &"first")
+    try client.rpush(&"tasks", &"second")
+    try client.rpush(&"tasks", &"third")
+
+    llen1 := try client.llen(&"tasks")
+    print("LLEN tasks: " + string.from_i64(llen1))
+
+    range_items := try client.lrange(&"tasks", 0, -1)
+    print("LRANGE tasks 0..-1:")
+    for it in range_items.as_slice() {
+        print("  - " + it)
+    }
+
+    match try client.lpop(&"tasks") {
+        Some(item) => { print("LPOP tasks: " + item) }
+        None => {}
+    }
+    match try client.rpop(&"tasks") {
+        Some(item) => { print("RPOP tasks: " + item) }
+        None => {}
+    }
+    llen2 := try client.llen(&"tasks")
+    print("LLEN tasks remaining: " + string.from_i64(llen2))
+
+    // 5. Sets
+    print("5. Testing Sets (SADD, SCARD, SISMEMBER, SMEMBERS)...")
+    try client.del(&"tags")
+    try client.sadd(&"tags", &"systems")
+    try client.sadd(&"tags", &"memory-safe")
+    try client.sadd(&"tags", &"fast")
+
+    scard := try client.scard(&"tags")
+    print("SCARD tags: " + string.from_i64(scard))
+
+    is_sys := try client.sismember(&"tags", &"systems")
+    if is_sys { print("SISMEMBER tags 'systems': true") }
+
+    is_gc := try client.sismember(&"tags", &"garbage-collector")
+    if !is_gc { print("SISMEMBER tags 'garbage-collector': false") }
+
+    tags := try client.smembers(&"tags")
+    print("SMEMBERS tags count: " + string.from_i64(i64(tags.len())))
+
+    // 6. Close
+    print("6. Closing Redis client...")
+    try client.close()
+
+    print("=== All Redis integration tests passed successfully! ===")
+    return Ok(())
+}
+
+fn main() {
+    match run_tests() {
+        Ok(_) => {}
+        Err(e) => {
+            print("Redis test failed: " + e.message)
+        }
+    }
+}

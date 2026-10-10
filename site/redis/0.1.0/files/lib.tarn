@@ -1,0 +1,629 @@
+// tarn-redis: Native Redis Client Driver for Tarn
+// Implements the REdis Serialization Protocol (RESP) over native TCP sockets.
+// 100% pure Tarn systems code over stdlib/net; zero external C dependencies.
+
+import "net"
+import "string"
+
+pub copy enum ErrorKind {
+    ConnectionFailed
+    QueryFailed
+    ProtocolError
+    IoError
+}
+
+pub struct Error {
+    pub kind    ErrorKind
+    pub message string
+}
+
+pub fn Error.new(kind ErrorKind, message string) Error {
+    return Error{kind: kind, message: message}
+}
+
+pub struct Config {
+    pub host string
+    pub port u16
+}
+
+pub fn Config.new(host string, port u16) Config {
+    return Config{host: host, port: port}
+}
+
+pub fn Config.default() Config {
+    return Config{host: "127.0.0.1", port: 6379}
+}
+
+// --- RESP Value Model ---
+
+pub enum RespVal {
+    Simple(string)
+    Error(string)
+    Integer(i64)
+    Bulk(string)
+    Array(Vec<RespVal>)
+    Null
+}
+
+pub fn RespVal.clone(&self) RespVal {
+    match self {
+        RespVal.Simple(s) => return RespVal.Simple(s.clone())
+        RespVal.Error(s) => return RespVal.Error(s.clone())
+        RespVal.Integer(n) => return RespVal.Integer(n)
+        RespVal.Bulk(s) => return RespVal.Bulk(s.clone())
+        RespVal.Array(arr) => {
+            var new_arr: Vec<RespVal> = Vec.new()
+            for it in arr.as_slice() {
+                new_arr.push(it.clone())
+            }
+            return RespVal.Array(new_arr)
+        }
+        RespVal.Null => return RespVal.Null
+    }
+}
+
+pub fn RespVal.as_string(&self) Option<string> {
+    match self {
+        RespVal.Simple(s) => return Some(s.clone())
+        RespVal.Bulk(s) => return Some(s.clone())
+        _ => return None
+    }
+}
+
+pub fn RespVal.as_i64(&self) Option<i64> {
+    match self {
+        RespVal.Integer(n) => return Some(n)
+        RespVal.Bulk(s) => return string.parse_i64(s)
+        RespVal.Simple(s) => return string.parse_i64(s)
+        _ => return None
+    }
+}
+
+pub fn RespVal.is_null(&self) bool {
+    match self {
+        RespVal.Null => return true
+        _ => return false
+    }
+}
+
+// --- Protocol Formatting & Buffered Reader ---
+
+fn format_command(args &[3]string) Vec<u8> {
+    var out: Vec<u8> = Vec.new()
+    header := "*" + string.from_i64(i64(args.len())) + "\r\n"
+    for b in header.bytes() { out.push(b) }
+    for arg in args {
+        len_str := "$" + string.from_i64(i64(arg.len())) + "\r\n"
+        for b in len_str.bytes() { out.push(b) }
+        for b in arg.bytes() { out.push(b) }
+        out.push(13)
+        out.push(10)
+    }
+    return out
+}
+
+fn format_cmd_1(arg0 &string) Vec<u8> {
+    var out: Vec<u8> = Vec.new()
+    h := "*1\r\n"
+    for b in h.bytes() { out.push(b) }
+    l0 := "$" + string.from_i64(i64(arg0.len())) + "\r\n"
+    for b in l0.bytes() { out.push(b) }
+    for b in arg0.bytes() { out.push(b) }
+    out.push(13)
+    out.push(10)
+    return out
+}
+
+fn format_cmd_2(arg0 &string, arg1 &string) Vec<u8> {
+    var out: Vec<u8> = Vec.new()
+    h := "*2\r\n"
+    for b in h.bytes() { out.push(b) }
+    l0 := "$" + string.from_i64(i64(arg0.len())) + "\r\n"
+    for b in l0.bytes() { out.push(b) }
+    for b in arg0.bytes() { out.push(b) }
+    out.push(13)
+    out.push(10)
+    l1 := "$" + string.from_i64(i64(arg1.len())) + "\r\n"
+    for b in l1.bytes() { out.push(b) }
+    for b in arg1.bytes() { out.push(b) }
+    out.push(13)
+    out.push(10)
+    return out
+}
+
+fn format_cmd_3(arg0 &string, arg1 &string, arg2 &string) Vec<u8> {
+    var out: Vec<u8> = Vec.new()
+    h := "*3\r\n"
+    for b in h.bytes() { out.push(b) }
+    l0 := "$" + string.from_i64(i64(arg0.len())) + "\r\n"
+    for b in l0.bytes() { out.push(b) }
+    for b in arg0.bytes() { out.push(b) }
+    out.push(13)
+    out.push(10)
+    l1 := "$" + string.from_i64(i64(arg1.len())) + "\r\n"
+    for b in l1.bytes() { out.push(b) }
+    for b in arg1.bytes() { out.push(b) }
+    out.push(13)
+    out.push(10)
+    l2 := "$" + string.from_i64(i64(arg2.len())) + "\r\n"
+    for b in l2.bytes() { out.push(b) }
+    for b in arg2.bytes() { out.push(b) }
+    out.push(13)
+    out.push(10)
+    return out
+}
+
+fn format_cmd_4(arg0 &string, arg1 &string, arg2 &string, arg3 &string) Vec<u8> {
+    var out: Vec<u8> = Vec.new()
+    h := "*4\r\n"
+    for b in h.bytes() { out.push(b) }
+    l0 := "$" + string.from_i64(i64(arg0.len())) + "\r\n"
+    for b in l0.bytes() { out.push(b) }
+    for b in arg0.bytes() { out.push(b) }
+    out.push(13)
+    out.push(10)
+    l1 := "$" + string.from_i64(i64(arg1.len())) + "\r\n"
+    for b in l1.bytes() { out.push(b) }
+    for b in arg1.bytes() { out.push(b) }
+    out.push(13)
+    out.push(10)
+    l2 := "$" + string.from_i64(i64(arg2.len())) + "\r\n"
+    for b in l2.bytes() { out.push(b) }
+    for b in arg2.bytes() { out.push(b) }
+    out.push(13)
+    out.push(10)
+    l3 := "$" + string.from_i64(i64(arg3.len())) + "\r\n"
+    for b in l3.bytes() { out.push(b) }
+    for b in arg3.bytes() { out.push(b) }
+    out.push(13)
+    out.push(10)
+    return out
+}
+
+struct StreamReader {
+    buf [512]u8
+    len usize
+    pos usize
+}
+
+fn StreamReader.new() StreamReader {
+    return StreamReader{
+        buf: [512]u8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+        len: 0,
+        pos: 0
+    }
+}
+
+fn StreamReader.next_u8(&mut self, stream &mut net.TcpStream) Result<u8, Error> {
+    if self.pos >= self.len {
+        var chunk = &mut self.buf[0..512]
+        match stream.read(chunk) {
+            Ok(n) => {
+                if n == usize(0) {
+                    return Err(Error.new(ErrorKind.IoError, "Connection closed by Redis"))
+                }
+                self.len = n
+                self.pos = 0
+            }
+            Err(_) => {
+                return Err(Error.new(ErrorKind.IoError, "Failed to read from TCP stream"))
+            }
+        }
+    }
+    b := self.buf[self.pos]
+    self.pos = self.pos + 1
+    return Ok(b)
+}
+
+fn StreamReader.read_line(&mut self, stream &mut net.TcpStream) Result<string, Error> {
+    var bytes: Vec<u8> = Vec.new()
+    for true {
+        b := try self.next_u8(stream)
+        if b == 13 {
+            next_b := try self.next_u8(stream)
+            match string_from_utf8(bytes.as_slice()) {
+                Some(s) => return Ok(s)
+                None => return Err(Error.new(ErrorKind.ProtocolError, "Invalid UTF-8 in line"))
+            }
+        }
+        bytes.push(b)
+    }
+    return Ok("")
+}
+
+fn StreamReader.read_bytes(&mut self, stream &mut net.TcpStream, count usize) Result<Vec<u8>, Error> {
+    var out: Vec<u8> = Vec.new()
+    var i: usize = 0
+    for i < count {
+        b := try self.next_u8(stream)
+        out.push(b)
+        i = i + 1
+    }
+    try self.next_u8(stream) // consume \r
+    try self.next_u8(stream) // consume \n
+    return Ok(out)
+}
+
+fn StreamReader.read_resp(&mut self, stream &mut net.TcpStream) Result<RespVal, Error> {
+    type_byte := try self.next_u8(stream)
+    if type_byte == 43 { // '+' Simple string
+        line := try self.read_line(stream)
+        return Ok(RespVal.Simple(line))
+    }
+    if type_byte == 45 { // '-' Error
+        line := try self.read_line(stream)
+        return Ok(RespVal.Error(line))
+    }
+    if type_byte == 58 { // ':' Integer
+        line := try self.read_line(stream)
+        var num: i64 = 0
+        match string.parse_i64(&line) {
+            Some(n) => { num = n }
+            None => { return Err(Error.new(ErrorKind.ProtocolError, "Invalid integer in RESP")) }
+        }
+        return Ok(RespVal.Integer(num))
+    }
+    if type_byte == 36 { // '$' Bulk string
+        len_str := try self.read_line(stream)
+        var len: i64 = 0
+        match string.parse_i64(&len_str) {
+            Some(n) => { len = n }
+            None => { return Err(Error.new(ErrorKind.ProtocolError, "Invalid bulk string length")) }
+        }
+        if len == -1 {
+            return Ok(RespVal.Null)
+        }
+        bytes := try self.read_bytes(stream, usize(len))
+        match string_from_utf8(bytes.as_slice()) {
+            Some(s) => return Ok(RespVal.Bulk(s))
+            None => return Err(Error.new(ErrorKind.ProtocolError, "Invalid UTF-8 in bulk string"))
+        }
+    }
+    if type_byte == 42 { // '*' Array
+        count_str := try self.read_line(stream)
+        var count: i64 = 0
+        match string.parse_i64(&count_str) {
+            Some(n) => { count = n }
+            None => { return Err(Error.new(ErrorKind.ProtocolError, "Invalid array count")) }
+        }
+        if count == -1 {
+            return Ok(RespVal.Null)
+        }
+        var items: Vec<RespVal> = Vec.new()
+        var idx: i64 = 0
+        for idx < count {
+            item := try self.read_resp(stream)
+            items.push(item)
+            idx = idx + 1
+        }
+        return Ok(RespVal.Array(items))
+    }
+    return Err(Error.new(ErrorKind.ProtocolError, "Unknown RESP type prefix: " + string.from_i64(i64(type_byte))))
+}
+
+// --- Client Implementation ---
+
+pub struct Client {
+    stream net.TcpStream
+    reader StreamReader
+}
+
+pub fn Client.connect(cfg Config) Result<Client, Error> {
+    addr := cfg.host.clone() + ":" + string.from_i64(i64(cfg.port))
+    var stream: net.TcpStream
+    match net.TcpStream.connect(&addr) {
+        Ok(s) => { stream = s }
+        Err(_) => return Err(Error.new(ErrorKind.ConnectionFailed, "Failed to connect to Redis at " + addr))
+    }
+    var client = Client{
+        stream: stream,
+        reader: StreamReader.new()
+    }
+    try client.ping()
+    return Ok(client)
+}
+
+pub fn Client.close(self) Result<void, Error> {
+    match self.stream.close() {
+        Ok(_) => return Ok(())
+        Err(_) => return Err(Error.new(ErrorKind.IoError, "Failed to close stream"))
+    }
+}
+
+fn Client.execute(&mut self, packet Vec<u8>) Result<RespVal, Error> {
+    match self.stream.write_all(packet.as_slice()) {
+        Ok(_) => {}
+        Err(_) => return Err(Error.new(ErrorKind.IoError, "Failed to write to Redis"))
+    }
+    resp := try self.reader.read_resp(&mut self.stream)
+    match &resp {
+        RespVal.Error(e) => return Err(Error.new(ErrorKind.QueryFailed, e.clone()))
+        _ => return Ok(resp)
+    }
+}
+
+pub fn Client.ping(&mut self) Result<string, Error> {
+    packet := format_cmd_1(&"PING")
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Simple(s) => return Ok(s)
+        RespVal.Bulk(s) => return Ok(s)
+        _ => return Ok("PONG")
+    }
+}
+
+pub fn Client.echo(&mut self, message &string) Result<string, Error> {
+    packet := format_cmd_2(&"ECHO", message)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Bulk(s) => return Ok(s)
+        RespVal.Simple(s) => return Ok(s)
+        _ => return Ok("")
+    }
+}
+
+// --- Key-Value (Strings) ---
+
+pub fn Client.set(&mut self, key &string, value &string) Result<void, Error> {
+    packet := format_cmd_3(&"SET", key, value)
+    try self.execute(packet)
+    return Ok(())
+}
+
+pub fn Client.set_ex(&mut self, key &string, seconds i64, value &string) Result<void, Error> {
+    sec_str := string.from_i64(seconds)
+    packet := format_cmd_4(&"SETEX", key, &sec_str, value)
+    try self.execute(packet)
+    return Ok(())
+}
+
+pub fn Client.get(&mut self, key &string) Result<Option<string>, Error> {
+    packet := format_cmd_2(&"GET", key)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Bulk(s) => return Ok(Some(s))
+        RespVal.Null => return Ok(None)
+        _ => return Ok(None)
+    }
+}
+
+pub fn Client.del(&mut self, key &string) Result<i64, Error> {
+    packet := format_cmd_2(&"DEL", key)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Integer(n) => return Ok(n)
+        _ => return Ok(0)
+    }
+}
+
+pub fn Client.exists(&mut self, key &string) Result<bool, Error> {
+    packet := format_cmd_2(&"EXISTS", key)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Integer(n) => return Ok(n > 0)
+        _ => return Ok(false)
+    }
+}
+
+pub fn Client.incr(&mut self, key &string) Result<i64, Error> {
+    packet := format_cmd_2(&"INCR", key)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Integer(n) => return Ok(n)
+        _ => return Ok(0)
+    }
+}
+
+pub fn Client.decr(&mut self, key &string) Result<i64, Error> {
+    packet := format_cmd_2(&"DECR", key)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Integer(n) => return Ok(n)
+        _ => return Ok(0)
+    }
+}
+
+pub fn Client.incr_by(&mut self, key &string, amount i64) Result<i64, Error> {
+    amt_str := string.from_i64(amount)
+    packet := format_cmd_3(&"INCRBY", key, &amt_str)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Integer(n) => return Ok(n)
+        _ => return Ok(0)
+    }
+}
+
+// --- Hashes ---
+
+pub fn Client.hset(&mut self, key &string, field &string, value &string) Result<i64, Error> {
+    packet := format_cmd_4(&"HSET", key, field, value)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Integer(n) => return Ok(n)
+        _ => return Ok(0)
+    }
+}
+
+pub fn Client.hget(&mut self, key &string, field &string) Result<Option<string>, Error> {
+    packet := format_cmd_3(&"HGET", key, field)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Bulk(s) => return Ok(Some(s))
+        RespVal.Null => return Ok(None)
+        _ => return Ok(None)
+    }
+}
+
+pub fn Client.hdel(&mut self, key &string, field &string) Result<i64, Error> {
+    packet := format_cmd_3(&"HDEL", key, field)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Integer(n) => return Ok(n)
+        _ => return Ok(0)
+    }
+}
+
+pub fn Client.hlen(&mut self, key &string) Result<i64, Error> {
+    packet := format_cmd_2(&"HLEN", key)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Integer(n) => return Ok(n)
+        _ => return Ok(0)
+    }
+}
+
+// --- Lists ---
+
+pub fn Client.rpush(&mut self, key &string, value &string) Result<i64, Error> {
+    packet := format_cmd_3(&"RPUSH", key, value)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Integer(n) => return Ok(n)
+        _ => return Ok(0)
+    }
+}
+
+pub fn Client.lpush(&mut self, key &string, value &string) Result<i64, Error> {
+    packet := format_cmd_3(&"LPUSH", key, value)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Integer(n) => return Ok(n)
+        _ => return Ok(0)
+    }
+}
+
+pub fn Client.lpop(&mut self, key &string) Result<Option<string>, Error> {
+    packet := format_cmd_2(&"LPOP", key)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Bulk(s) => return Ok(Some(s))
+        RespVal.Null => return Ok(None)
+        _ => return Ok(None)
+    }
+}
+
+pub fn Client.rpop(&mut self, key &string) Result<Option<string>, Error> {
+    packet := format_cmd_2(&"RPOP", key)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Bulk(s) => return Ok(Some(s))
+        RespVal.Null => return Ok(None)
+        _ => return Ok(None)
+    }
+}
+
+pub fn Client.llen(&mut self, key &string) Result<i64, Error> {
+    packet := format_cmd_2(&"LLEN", key)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Integer(n) => return Ok(n)
+        _ => return Ok(0)
+    }
+}
+
+pub fn Client.lrange(&mut self, key &string, start i64, stop i64) Result<Vec<string>, Error> {
+    start_str := string.from_i64(start)
+    stop_str := string.from_i64(stop)
+    packet := format_cmd_4(&"LRANGE", key, &start_str, &stop_str)
+    resp := try self.execute(packet)
+    var out: Vec<string> = Vec.new()
+    match resp {
+        RespVal.Array(arr) => {
+            for it in arr.as_slice() {
+                match it.as_string() {
+                    Some(s) => out.push(s)
+                    None => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    return Ok(out)
+}
+
+// --- Sets ---
+
+pub fn Client.sadd(&mut self, key &string, member &string) Result<i64, Error> {
+    packet := format_cmd_3(&"SADD", key, member)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Integer(n) => return Ok(n)
+        _ => return Ok(0)
+    }
+}
+
+pub fn Client.srem(&mut self, key &string, member &string) Result<i64, Error> {
+    packet := format_cmd_3(&"SREM", key, member)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Integer(n) => return Ok(n)
+        _ => return Ok(0)
+    }
+}
+
+pub fn Client.sismember(&mut self, key &string, member &string) Result<bool, Error> {
+    packet := format_cmd_3(&"SISMEMBER", key, member)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Integer(n) => return Ok(n > 0)
+        _ => return Ok(false)
+    }
+}
+
+pub fn Client.scard(&mut self, key &string) Result<i64, Error> {
+    packet := format_cmd_2(&"SCARD", key)
+    resp := try self.execute(packet)
+    match resp {
+        RespVal.Integer(n) => return Ok(n)
+        _ => return Ok(0)
+    }
+}
+
+pub fn Client.smembers(&mut self, key &string) Result<Vec<string>, Error> {
+    packet := format_cmd_2(&"SMEMBERS", key)
+    resp := try self.execute(packet)
+    var out: Vec<string> = Vec.new()
+    match resp {
+        RespVal.Array(arr) => {
+            for it in arr.as_slice() {
+                match it.as_string() {
+                    Some(s) => out.push(s)
+                    None => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    return Ok(out)
+}
