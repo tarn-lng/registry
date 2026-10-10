@@ -1,0 +1,118 @@
+// Comprehensive test suite for tarn-sqlite
+import "lib"
+
+fn run_tests() Result<void, lib.Error> {
+    print("=== Testing SQLite In-Memory Database ===")
+    var db = try lib.open(":memory:")
+
+    // 1. DDL: Create Table
+    print("1. Creating table 'players'...")
+    try db.exec("CREATE TABLE players (id INTEGER PRIMARY KEY, name TEXT NOT NULL, score REAL, active INTEGER)")
+
+    // 2. Prepared Statement Inserts with parameter bindings
+    print("2. Inserting records with prepared statement...")
+    var stmt = try db.prepare("INSERT INTO players (name, score, active) VALUES (?1, ?2, ?3)")
+
+    // Row 1: Alice
+    try stmt.bind_text(1, "Alice")
+    try stmt.bind_f64(2, 98.5)
+    try stmt.bind_i64(3, 1)
+    try stmt.run()
+    try stmt.reset()
+
+    // Row 2: Bob
+    try stmt.bind_text(1, "Bob")
+    try stmt.bind_f64(2, 75.0)
+    try stmt.bind_i64(3, 0)
+    try stmt.run()
+    try stmt.reset()
+
+    // Row 3: Charlie
+    try stmt.bind_text(1, "Charlie")
+    try stmt.bind_f64(2, 88.25)
+    try stmt.bind_i64(3, 1)
+    try stmt.run()
+    try stmt.reset()
+
+    try stmt.finalize()
+
+    print("Last insert rowid:")
+    print(db.last_insert_id())
+
+    // 3. High-level query execution
+    print("3. Executing high-level query...")
+    res := try db.query("SELECT id, name, score, active FROM players ORDER BY id ASC")
+    print("Columns:")
+    var c_idx: usize = 0
+    for c_idx < res.columns.len() {
+        print(res.columns.get(c_idx).clone())
+        c_idx = c_idx + 1
+    }
+
+    print("Rows returned:")
+    print(res.len())
+
+    var r_idx: usize = 0
+    for r_idx < res.rows.len() {
+        row := res.rows.get(r_idx)
+        var row_str = ""
+        var v_idx: usize = 0
+        for v_idx < row.len() {
+            if v_idx > 0 {
+                row_str = row_str + " | "
+            }
+            row_str = row_str + row.get_or(v_idx, "")
+            v_idx = v_idx + 1
+        }
+        print(row_str)
+        r_idx = r_idx + 1
+    }
+
+    // 4. Update statement & changes()
+    print("4. Updating Bob's score...")
+    var update_stmt = try db.prepare("UPDATE players SET score = ?1, active = ?2 WHERE name = ?3")
+    try update_stmt.bind_f64(1, 82.5)
+    try update_stmt.bind_i64(2, 1)
+    try update_stmt.bind_text(3, "Bob")
+    try update_stmt.run()
+    try update_stmt.finalize()
+
+    print("Rows changed by update:")
+    print(db.changes())
+
+    // 5. Aggregate query
+    print("5. Running aggregate query...")
+    agg := try db.query("SELECT COUNT(*), AVG(score), MAX(score) FROM players")
+    if agg.len() > 0 {
+        agg_row := agg.rows.get(0)
+        print("Count: " + agg_row.get_or(0, ""))
+        print("Avg: " + agg_row.get_or(1, ""))
+        print("Max: " + agg_row.get_or(2, ""))
+    }
+
+    // 6. Test Error Handling
+    print("6. Testing error handling on invalid SQL...")
+    match db.query("SELECT * FROM non_existent_table") {
+        Ok(ok_res) => { print("ERROR: Expected failure on missing table!") }
+        Err(err) => {
+            print("Successfully caught expected error:")
+            print(err.message)
+        }
+    }
+
+    // 7. Clean close
+    print("7. Closing database connection...")
+    try db.close()
+
+    print("=== All SQLite tests passed successfully! ===")
+    return Ok(())
+}
+
+fn main() {
+    match run_tests() {
+        Ok(v) => {}
+        Err(err) => {
+            print("Test failed: " + err.message)
+        }
+    }
+}

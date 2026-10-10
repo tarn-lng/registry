@@ -10,5 +10,9 @@
   "postgres": {
     "description": "Pure native PostgreSQL client driver for Tarn. Protocol 3.0 over TCP sockets; zero C dependencies.",
     "nativeLink": ""
+  },
+  "sqlite": {
+    "description": "Official SQLite driver and safe C FFI bindings for Tarn. In-memory and persistent storage backed by libsqlite3.",
+    "nativeLink": "sqlite3"
   }
 }
