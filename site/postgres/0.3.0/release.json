@@ -1,0 +1,16 @@
+{
+  "dependencies": {},
+  "entry": "lib.tarn",
+  "files": {
+    "README.md": "a2e3b244b0782d2b061121305ecef4302b2ccd374d7d68872363aa3be519f16b",
+    "examples/demo.tarn": "3b4508ae06deecea1411cf557c2a625b8b4523d5ed35695ac59c4d2d21f22a11",
+    "lib.tarn": "4f8d3a0871e795c891ccc79f60321eabe12d3cdf3875a229c77a3b7459520a4b",
+    "main.tarn": "3397cbd5e683a8094c78f0c6292a0201f86db801e928907c96e89e15f277cac9",
+    "tarn.toml": "0f3ca9f2c9b55b4424fa91063bc7716025327954adddcea128ffaf9df8721bc8"
+  },
+  "hash": "4fd9339dc5a1d28e0e9c1cec171bba414aee76120e2069422da8a9ce4c0d2e1a",
+  "name": "postgres",
+  "published": 1791646094,
+  "schema": 1,
+  "version": "0.3.0"
+}
