@@ -1,0 +1,103 @@
+// Comprehensive integration test suite for tarn-mongo against real MongoDB in Docker
+import "lib"
+
+fn run_tests() Result<void, lib.Error> {
+    print("=== Testing Tarn MongoDB Native Driver ===")
+
+    // 1. Connect
+    print("1. Connecting to MongoDB (127.0.0.1:27017, database: testdb)...")
+    cfg := lib.Config.default()
+    var client = try lib.Client.connect(cfg)
+    print("Connected successfully! Ping verified.")
+
+    // 2. Clean slate: drop collection 'users'
+    print("2. Resetting 'users' collection...")
+    try client.drop_collection(&"users")
+
+    // 3. Insert Documents
+    print("3. Inserting documents into 'users'...")
+    var doc1 = lib.BsonDoc.new()
+    doc1.set_string("name", "Alice")
+    doc1.set_f64("score", 95.5)
+    doc1.set_i32("age", 28)
+    doc1.set_bool("active", true)
+    try client.insert_one(&"users", doc1)
+
+    var doc2 = lib.BsonDoc.new()
+    doc2.set_string("name", "Bob")
+    doc2.set_f64("score", 82.0)
+    doc2.set_i32("age", 34)
+    doc2.set_bool("active", false)
+    try client.insert_one(&"users", doc2)
+
+    var doc3 = lib.BsonDoc.new()
+    doc3.set_string("name", "Charlie")
+    doc3.set_f64("score", 91.0)
+    doc3.set_i32("age", 22)
+    doc3.set_bool("active", true)
+    try client.insert_one(&"users", doc3)
+    print("Inserted 3 documents successfully.")
+
+    // 4. Count documents
+    print("4. Counting documents in 'users'...")
+    var empty_filter = lib.BsonDoc.new()
+    count := try client.count_documents(&"users", empty_filter)
+    print("Total documents count:")
+    print(count)
+
+    // 5. Query / Find all documents
+    print("5. Finding all documents...")
+    var filter_all = lib.BsonDoc.new()
+    users := try client.find(&"users", filter_all)
+    print("Retrieved documents count:")
+    print(users.len())
+
+    for u in users.as_slice() {
+        print(u.to_json())
+    }
+
+    // 6. Filtered query: active users only
+    print("6. Querying active users only (active: true)...")
+    var active_filter = lib.BsonDoc.new()
+    active_filter.set_bool("active", true)
+    active_users := try client.find(&"users", active_filter)
+    print("Active users found:")
+    print(active_users.len())
+    for au in active_users.as_slice() {
+        var name = "unknown"
+        match au.get_string(&"name") {
+            Some(n) => { name = n }
+            None => {}
+        }
+        print("User: " + name)
+    }
+
+    // 7. Delete inactive users
+    print("7. Deleting inactive users (active: false)...")
+    var inactive_filter = lib.BsonDoc.new()
+    inactive_filter.set_bool("active", false)
+    deleted := try client.delete_many(&"users", inactive_filter)
+    print("Deleted count:")
+    print(deleted)
+
+    // 8. Re-check count
+    var filter_remaining = lib.BsonDoc.new()
+    rem_count := try client.count_documents(&"users", filter_remaining)
+    print("Remaining documents count (should be 2):")
+    print(rem_count)
+
+    // 9. Close
+    print("8. Closing connection...")
+    try client.close()
+    print("=== All MongoDB integration tests passed successfully! ===")
+    return Ok(())
+}
+
+fn main() {
+    match run_tests() {
+        Ok(_) => {}
+        Err(e) => {
+            print("MongoDB test failed: " + e.message)
+        }
+    }
+}

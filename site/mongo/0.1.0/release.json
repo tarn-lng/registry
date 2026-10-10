@@ -1,0 +1,15 @@
+{
+  "dependencies": {},
+  "entry": "lib.tarn",
+  "files": {
+    "README.md": "06ac234cd3c78a50db24afb4b39669ac4dc2b0b26dfb57c48aacf2ae3784a746",
+    "lib.tarn": "e5138c3987131eb1b34d38b4f02662f7497f795ddaac39a3c8cdbb74831a1e90",
+    "main.tarn": "7211452e8a707c28ad44d92ca7e93375545263b60bfd6207b9f49adb91339c9e",
+    "tarn.toml": "2ee5fdd8bdbea0824a07d84eb59cb38fb028b32b50ce58f60ffa403ed613c5ff"
+  },
+  "hash": "b09d6f61fa16b091b0c971063a20a9a245eb4f5a6b40996ad468dbe189bed570",
+  "name": "mongo",
+  "published": 1791597549,
+  "schema": 1,
+  "version": "0.1.0"
+}
