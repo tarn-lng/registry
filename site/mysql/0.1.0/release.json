@@ -1,0 +1,16 @@
+{
+  "dependencies": {},
+  "entry": "lib.tarn",
+  "files": {
+    "README.md": "116271e3e6d1f83daad0283a316c211d1db4560ade674ad06fab6f3377ed671b",
+    "examples/demo.tarn": "665f24bfd8faf4e8e0cdfa5a8824fdce6abfd7cd8e2c16684e8b537931e286a5",
+    "lib.tarn": "9c3c58535eb71264fe17a1afe39f8240c17116211d4134e4beacbe6122ed0801",
+    "main.tarn": "665f24bfd8faf4e8e0cdfa5a8824fdce6abfd7cd8e2c16684e8b537931e286a5",
+    "tarn.toml": "e204bab16b1fdbee55fdc27865b3fc5ffd2ff21870e7e847dd25b26bce4ecc4e"
+  },
+  "hash": "cc72e7fb8d6c242381959c2f9dad5e560769279a779df11ff05ebf0cbcb8c4db",
+  "name": "mysql",
+  "published": 1791595306,
+  "schema": 1,
+  "version": "0.1.0"
+}

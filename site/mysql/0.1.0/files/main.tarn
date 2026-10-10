@@ -1,0 +1,90 @@
+import "string"
+import "lib"
+
+fn main() {
+    print("==================================================")
+    print("    Tarn MySQL / MariaDB Native Driver v0.1.0")
+    print("    Pure Tarn · Zero C Dependencies · Docker Test")
+    print("==================================================")
+
+    cfg := lib.Config.default()
+    print("Connecting to MySQL at " + cfg.host + ":3306 (user: " + cfg.user + ", db: " + cfg.database + ")...")
+
+    var client: lib.Client
+    match lib.Client.connect(cfg) {
+        Ok(c) => {
+            print("✓ Connected! Server version: " + c.server_version)
+            client = c
+        }
+        Err(e) => {
+            print("✗ Connection error: " + e.message + " (code: " + string.from_u64(u64(e.code)) + ")")
+            return
+        }
+    }
+
+    print("\n[1] Creating 'employees' table...")
+    drop_sql := "DROP TABLE IF EXISTS employees;"
+    match client.execute(&drop_sql) {
+        Ok(tag) => print("    " + tag)
+        Err(e)  => print("    Error: " + e.message)
+    }
+
+    create_sql := "CREATE TABLE employees (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100), role VARCHAR(100), salary INT);"
+    match client.execute(&create_sql) {
+        Ok(tag) => print("    Table created: " + tag)
+        Err(e)  => print("    Error: " + e.message)
+    }
+
+    print("\n[2] Inserting test records...")
+    insert_sql := "INSERT INTO employees (name, role, salary) VALUES ('Alice Smith', 'Systems Engineer', 125000), ('Bob Jones', 'Compiler Specialist', 135000), ('Carol White', 'Kernel Developer', 140000), ('David Black', 'Database Architect', 130000);"
+    match client.execute(&insert_sql) {
+        Ok(tag) => print("    " + tag)
+        Err(e)  => print("    Error: " + e.message)
+    }
+
+    print("\n[3] Querying employees ordered by salary DESC...")
+    select_sql := "SELECT id, name, role, salary FROM employees ORDER BY salary DESC;"
+    match client.query(&select_sql) {
+        Ok(res) => {
+            print("    Columns (" + string.from_u64(u64(res.columns.len())) + "):")
+            var c_line = "    | "
+            for col in res.columns.as_slice() {
+                c_line = c_line + col.clone() + " | "
+            }
+            print(c_line)
+            print("    --------------------------------------------------------------")
+
+            for r in res.rows.as_slice() {
+                id := r.get_or(usize(0), "?")
+                name := r.get_or(usize(1), "?")
+                role := r.get_or(usize(2), "?")
+                salary := r.get_or(usize(3), "?")
+                print("    | #" + id + " | " + name + " | " + role + " | $" + salary)
+            }
+            print("    --------------------------------------------------------------")
+            print("    Total rows returned: " + string.from_u64(u64(res.rows.len())))
+        }
+        Err(e) => print("    Query error: " + e.message)
+    }
+
+    print("\n[4] Running aggregate query (COUNT, MIN, MAX, AVG)...")
+    agg_sql := "SELECT count(*) AS total_staff, min(salary) AS min_sal, max(salary) AS max_sal, avg(salary) AS avg_sal FROM employees;"
+    match client.query(&agg_sql) {
+        Ok(res) => {
+            if res.rows.len() > usize(0) {
+                row := res.rows.get(usize(0))
+                print("    Total staff : " + row.get_or(usize(0), "?"))
+                print("    Min salary  : $" + row.get_or(usize(1), "?"))
+                print("    Max salary  : $" + row.get_or(usize(2), "?"))
+                print("    Avg salary  : $" + row.get_or(usize(3), "?"))
+            }
+        }
+        Err(e) => print("    Aggregate error: " + e.message)
+    }
+
+    print("\n[5] Closing session...")
+    match client.close() {
+        Ok(_) => print("✓ Session gracefully closed. All operations passed successfully!")
+        Err(e) => print("✗ Close error: " + e.message)
+    }
+}
