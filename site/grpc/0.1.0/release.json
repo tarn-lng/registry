@@ -1,0 +1,20 @@
+{
+  "dependencies": {
+    "http2": {
+      "registry": "https://tarn-lng.github.io/registry/",
+      "version": "^0.1.0"
+    }
+  },
+  "entry": "lib.tarn",
+  "files": {
+    "README.md": "dd54a58ce4e0f5e559b4670eeb1f742c6f5a64e647354b0a180ffd505ba428c4",
+    "integration.tarn": "59aed969568b74df0f7bdd674a47c30dc56d066736e937bf520226b6db741047",
+    "lib.tarn": "4e887b9423af4b84bcb8d5fe90a78a1409fbf93dc65efabf9544800bed9ab99c",
+    "tarn.toml": "09d97bbc242e958f37a7dfb957de287463fbc6fc8dd24a112c9f0a348015085c"
+  },
+  "hash": "d5ee2cc4db0514359a7751cda6d5eda916da25d48fc2e5125dcc998ee152066f",
+  "name": "grpc",
+  "published": 1792537383,
+  "schema": 1,
+  "version": "0.1.0"
+}

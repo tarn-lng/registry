@@ -9,6 +9,11 @@
     "repository": "https://github.com/tarn-lng/tarn-flame",
     "status": "experimental"
   },
+  "grpc": {
+    "maintainers": ["cesardev31"],
+    "repository": "https://github.com/tarn-lng/tarn-grpc",
+    "status": "experimental"
+  },
   "http2": {
     "maintainers": ["cesardev31"],
     "repository": "https://github.com/tarn-lng/tarn-http2",
