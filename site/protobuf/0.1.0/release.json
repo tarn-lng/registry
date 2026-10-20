@@ -1,0 +1,15 @@
+{
+  "dependencies": {},
+  "entry": "lib.tarn",
+  "files": {
+    "README.md": "3f648823033bb79fefc35d237f238254f1b2a8737bbbee989917c0a2622a3d5a",
+    "lib.tarn": "5e5e17644db14281bc97e0553470f6d70e8416a6bed82741c60f8997cd8299f7",
+    "lib_test.tarn": "56d96d45af21589f94bf435c96f3b85f76cc59077cc9d622b903355047feaea0",
+    "tarn.toml": "e10f7f22bcf3b42917c7ad2be2bfc0e4c351aacd08592ffda230b65e1fc4997f"
+  },
+  "hash": "19b8a732acba5c95451825b9bbae9e593f5ccbeebfe8db6db25b287f8b2461b7",
+  "name": "protobuf",
+  "published": 1792534688,
+  "schema": 1,
+  "version": "0.1.0"
+}

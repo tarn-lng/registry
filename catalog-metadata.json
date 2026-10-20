@@ -7,6 +7,10 @@
     "description": "Fast, lightweight and expressive web framework for Tarn. Ergonomic routing, path parameters, middlewares and route groups; zero C dependencies.",
     "nativeLink": ""
   },
+  "http2": {
+    "description": "HTTP/2 client (h2c) with complete HPACK for Tarn. Flow control, nonblocking full duplex; zero C dependencies.",
+    "nativeLink": ""
+  },
   "mongo": {
     "description": "Pure native MongoDB client driver and BSON engine for Tarn. OP_MSG protocol over TCP sockets; zero C dependencies.",
     "nativeLink": ""
@@ -17,6 +21,10 @@
   },
   "postgres": {
     "description": "Pure native PostgreSQL client driver for Tarn. Protocol 3.0 over TCP sockets; zero C dependencies.",
+    "nativeLink": ""
+  },
+  "protobuf": {
+    "description": "Protocol Buffers wire format for Tarn without a schema compiler. Writer and cursor decoder; zero C dependencies.",
     "nativeLink": ""
   },
   "redis": {
