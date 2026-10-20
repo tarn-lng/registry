@@ -7,6 +7,10 @@
     "description": "Fast, lightweight and expressive web framework for Tarn. Ergonomic routing, path parameters, middlewares and route groups; zero C dependencies.",
     "nativeLink": ""
   },
+  "grpc": {
+    "description": "gRPC client for Tarn over tarn-http2 (plaintext). Unary and bidirectional streaming calls; zero C dependencies.",
+    "nativeLink": ""
+  },
   "http2": {
     "description": "HTTP/2 client (h2c) with complete HPACK for Tarn. Flow control, nonblocking full duplex; zero C dependencies.",
     "nativeLink": ""
