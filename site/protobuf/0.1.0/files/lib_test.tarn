@@ -1,0 +1,165 @@
+// Vectors from the Protocol Buffers encoding guide plus round trips and
+// malformed input. Run with `tarn test`.
+import "lib"
+
+fn hex(data &[]u8) string {
+    digits := "0123456789abcdef"
+    var out = ""
+    for byte in data {
+        var pair: Vec<u8> = Vec.new()
+        pair.push(digits.bytes()[usize(byte / 16)])
+        pair.push(digits.bytes()[usize(byte % 16)])
+        match string_from(pair.as_slice()) { Some(text) => { out = out + &text }
+            None => { panic("hex") } }
+    }
+    return out
+}
+fn string_from(data &[]u8) Option<string> { return string_from_utf8(data) }
+fn expect(writer &lib.Writer, expected &string) {
+    actual := hex(writer.as_slice())
+    if &actual != expected {
+        print(actual)
+        panic("encoding mismatch")
+    }
+}
+fn only(data &[]u8) lib.Field {
+    var cursor = usize(0)
+    match lib.next(data, &mut cursor) {
+        Ok(found) => match found {
+            Some(field) => {
+                if cursor != data.len() { panic("field did not consume input") }
+                return field
+            }
+            None => { panic("no field") }
+        }
+        Err(error) => { panic("decode error") }
+    }
+}
+fn fails(data &[]u8) bool {
+    var cursor = usize(0)
+    for {
+        match lib.next(data, &mut cursor) {
+            Ok(found) => match found { Some(field) => {}
+                None => { return false } }
+            Err(error) => { return true }
+        }
+    }
+}
+
+fn test_guide_varint() {
+    var w = lib.Writer.new()
+    w.uint64(1, 150)
+    expect(&w, &"089601")
+    match only(w.as_slice()).uint64() { Ok(value) => { if value != 150 { panic("150") } }
+        Err(error) => { panic("uint64") } }
+}
+fn test_guide_string() {
+    var w = lib.Writer.new()
+    w.string(2, &"testing")
+    expect(&w, &"120774657374696e67")
+    data := w.finish()
+    match only(data.as_slice()).string(data.as_slice()) { Ok(text) => { if text != "testing" { panic("text") } }
+        Err(error) => { panic("string") } }
+}
+fn test_negative_int32_uses_ten_bytes() {
+    var w = lib.Writer.new()
+    w.int32(1, -1)
+    expect(&w, &"08ffffffffffffffffff01")
+    match only(w.as_slice()).int32() { Ok(value) => { if value != -1 { panic("-1") } }
+        Err(error) => { panic("int32") } }
+    var min = lib.Writer.new()
+    min.int64(1, -9223372036854775807 - 1)
+    match only(min.as_slice()).int64() { Ok(value) => { if value != -9223372036854775807 - 1 { panic("min") } }
+        Err(error) => { panic("int64") } }
+}
+fn test_zigzag() {
+    var w = lib.Writer.new()
+    w.sint64(1, 0)
+    w.sint64(1, -1)
+    w.sint64(1, 1)
+    w.sint64(1, -2)
+    w.sint64(1, 2147483647)
+    w.sint64(1, -2147483648)
+    expect(&w, &"080008010802080308feffffff0f08ffffffff0f")
+    data := w.finish()
+    var cursor = usize(0)
+    for expected in [6]i64{0, -1, 1, -2, 2147483647, -2147483648} {
+        match lib.next(data.as_slice(), &mut cursor) {
+            Ok(found) => match found {
+                Some(field) => match field.sint64() { Ok(value) => { if value != expected { panic("zigzag value") } }
+                    Err(error) => { panic("zigzag wire") } }
+                None => { panic("zigzag end") }
+            }
+            Err(error) => { panic("zigzag decode") }
+        }
+    }
+}
+fn test_fixed_little_endian() {
+    var w = lib.Writer.new()
+    w.fixed32(3, 16909060)
+    w.fixed64(4, 72623859790382856)
+    expect(&w, &"1d04030201210807060504030201")
+    data := w.finish()
+    var cursor = usize(0)
+    match lib.next(data.as_slice(), &mut cursor) {
+        Ok(found) => match found { Some(field) => match field.fixed32() { Ok(value) => { if value != 16909060 { panic("fixed32") } }
+                Err(error) => { panic("fixed32 wire") } }
+            None => { panic("fixed32 end") } }
+        Err(error) => { panic("fixed32 decode") }
+    }
+    match lib.next(data.as_slice(), &mut cursor) {
+        Ok(found) => match found { Some(field) => match field.fixed64() { Ok(value) => { if value != 72623859790382856 { panic("fixed64") } }
+                Err(error) => { panic("fixed64 wire") } }
+            None => { panic("fixed64 end") } }
+        Err(error) => { panic("fixed64 decode") }
+    }
+}
+fn test_nested_message_and_unknown_fields() {
+    var inner = lib.Writer.new()
+    inner.uint64(1, 150)
+    var outer = lib.Writer.new()
+    outer.uint64(99, 7)
+    outer.message(3, &inner)
+    outer.bool(5, true)
+    expect(&outer, &"9806071a030896012801")
+    data := outer.finish()
+    var cursor = usize(0)
+    var seen = 0
+    for {
+        match lib.next(data.as_slice(), &mut cursor) {
+            Ok(found) => match found {
+                Some(field) => {
+                    if field.number == 3 {
+                        match field.bytes(data.as_slice()) {
+                            Ok(payload) => match only(payload).uint64() { Ok(value) => { if value != 150 { panic("nested") } }
+                                Err(error) => { panic("nested wire") } }
+                            Err(error) => { panic("nested bytes") }
+                        }
+                        seen = seen + 1
+                    }
+                    if field.number == 5 { seen = seen + 1 }
+                }
+                None => { break }
+            }
+            Err(error) => { panic("decode") }
+        }
+    }
+    if seen != 2 { panic("fields") }
+}
+fn test_wrong_wire_type_is_an_error() {
+    var w = lib.Writer.new()
+    w.string(1, &"x")
+    data := w.finish()
+    match only(data.as_slice()).uint64() { Ok(value) => { panic("accepted wrong wire") }
+        Err(error) => {} }
+}
+fn test_malformed_input_is_rejected() {
+    if !fails(&[1]u8{8}) { panic("truncated varint value") }
+    if !fails(&[2]u8{8, 128}) { panic("unterminated varint") }
+    if !fails(&[3]u8{18, 5, 97}) { panic("truncated bytes") }
+    if !fails(&[2]u8{13, 1}) { panic("truncated fixed32") }
+    if !fails(&[1]u8{11}) { panic("group start") }
+    if !fails(&[2]u8{0, 1}) { panic("field zero") }
+    if !fails(&[12]u8{8, 255, 255, 255, 255, 255, 255, 255, 255, 255, 2, 0}) { panic("varint overflow") }
+    if fails(&[0]u8{}) { panic("empty input") }
+}

@@ -9,6 +9,11 @@
     "repository": "https://github.com/tarn-lng/tarn-flame",
     "status": "experimental"
   },
+  "http2": {
+    "maintainers": ["cesardev31"],
+    "repository": "https://github.com/tarn-lng/tarn-http2",
+    "status": "experimental"
+  },
   "mongo": {
     "maintainers": ["cesardev31"],
     "repository": "https://github.com/tarn-lng/tarn-mongo",
@@ -22,6 +27,11 @@
   "postgres": {
     "maintainers": ["cesardev31"],
     "repository": "https://github.com/tarn-lng/tarn-postgres",
+    "status": "experimental"
+  },
+  "protobuf": {
+    "maintainers": ["cesardev31"],
+    "repository": "https://github.com/tarn-lng/tarn-protobuf",
     "status": "experimental"
   },
   "redis": {
